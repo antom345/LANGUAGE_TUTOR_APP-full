@@ -41,9 +41,8 @@ class ChatController {
     List<ChatMessage> messages, {
     required bool initial,
   }) async {
-    final messagesPayload = initial
-        ? <Map<String, String>>[]
-        : _buildMessagesPayload(messages);
+    final messagesPayload =
+        initial ? <Map<String, String>>[] : _buildMessagesPayload(messages);
 
     return ApiService.sendChat(
       messages: messagesPayload,

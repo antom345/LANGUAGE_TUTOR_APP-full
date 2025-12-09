@@ -297,7 +297,8 @@ class _LessonScreenState extends State<LessonScreen> {
                                   ),
                                   padding: const EdgeInsets.all(16),
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Text(
                                         'Упражнение ${exIndex + 1}/${content.exercises.length}',
@@ -311,7 +312,9 @@ class _LessonScreenState extends State<LessonScreen> {
                                       ),
                                       const SizedBox(height: 8),
                                       if (ex.instruction != null &&
-                                          ex.instruction!.trim().isNotEmpty) ...[
+                                          ex.instruction!
+                                              .trim()
+                                              .isNotEmpty) ...[
                                         Text(
                                           ex.instruction!,
                                           style: Theme.of(context)
@@ -354,7 +357,8 @@ class _LessonScreenState extends State<LessonScreen> {
                                       const SizedBox(height: 12),
                                       if (ex.type == 'multiple_choice' &&
                                           ex.options != null) ...[
-                                        ...List.generate(ex.options!.length, (i) {
+                                        ...List.generate(ex.options!.length,
+                                            (i) {
                                           return RadioListTile<int>(
                                             value: i,
                                             groupValue: selected,
@@ -372,7 +376,8 @@ class _LessonScreenState extends State<LessonScreen> {
                                       ] else if (ex.type ==
                                           'translate_sentence') ...[
                                         TextFormField(
-                                          initialValue: _textAnswers[exIndex] ?? '',
+                                          initialValue:
+                                              _textAnswers[exIndex] ?? '',
                                           maxLines: 3,
                                           decoration: const InputDecoration(
                                             hintText: 'Введите перевод',
@@ -385,12 +390,15 @@ class _LessonScreenState extends State<LessonScreen> {
                                             });
                                           },
                                         ),
-                                      ] else if (ex.type == 'fill_in_blank') ...[
+                                      ] else if (ex.type ==
+                                          'fill_in_blank') ...[
                                         TextFormField(
-                                          initialValue: _textAnswers[exIndex] ?? '',
+                                          initialValue:
+                                              _textAnswers[exIndex] ?? '',
                                           maxLines: 1,
                                           decoration: const InputDecoration(
-                                            hintText: 'Введите пропущенное слово',
+                                            hintText:
+                                                'Введите пропущенное слово',
                                             border: OutlineInputBorder(),
                                             filled: true,
                                           ),
@@ -400,14 +408,18 @@ class _LessonScreenState extends State<LessonScreen> {
                                             });
                                           },
                                         ),
-                                        if (ex.explanation.trim().isNotEmpty) ...[
+                                        if (ex.explanation
+                                            .trim()
+                                            .isNotEmpty) ...[
                                           const SizedBox(height: 8),
                                           Text(
                                             ex.explanation,
                                             style: Theme.of(context)
                                                 .textTheme
                                                 .bodySmall
-                                                ?.copyWith(color: Colors.grey.shade700),
+                                                ?.copyWith(
+                                                    color:
+                                                        Colors.grey.shade700),
                                           ),
                                         ],
                                       ] else if (ex.type == 'reorder_words' &&
@@ -425,11 +437,13 @@ class _LessonScreenState extends State<LessonScreen> {
                                         Wrap(
                                           spacing: 8,
                                           runSpacing: 8,
-                                          children:
-                                              List.generate(ex.reorderWords!.length, (i) {
-                                            final current = _reorderSelected[exIndex] ??
-                                                <int>[];
-                                            final isSelected = current.contains(i);
+                                          children: List.generate(
+                                              ex.reorderWords!.length, (i) {
+                                            final current =
+                                                _reorderSelected[exIndex] ??
+                                                    <int>[];
+                                            final isSelected =
+                                                current.contains(i);
                                             final word = ex.reorderWords![i];
 
                                             return ChoiceChip(
@@ -437,36 +451,44 @@ class _LessonScreenState extends State<LessonScreen> {
                                               selected: isSelected,
                                               onSelected: (_) {
                                                 setState(() {
-                                                  final updated = List<int>.from(current);
+                                                  final updated =
+                                                      List<int>.from(current);
                                                   if (isSelected) {
                                                     updated.remove(i);
-                                                  } else if (!updated.contains(i)) {
+                                                  } else if (!updated
+                                                      .contains(i)) {
                                                     updated.add(i);
                                                   }
-                                                  _reorderSelected[exIndex] = updated;
+                                                  _reorderSelected[exIndex] =
+                                                      updated;
                                                 });
                                               },
                                             );
                                           }),
                                         ),
-                                        if ((_reorderSelected[exIndex] ?? const <int>[])
+                                        if ((_reorderSelected[exIndex] ??
+                                                const <int>[])
                                             .isNotEmpty) ...[
                                           const SizedBox(height: 8),
                                           Text(
-                                            (_reorderSelected[exIndex] ?? const <int>[])
+                                            (_reorderSelected[exIndex] ??
+                                                    const <int>[])
                                                 .map((i) => ex.reorderWords![i])
                                                 .join(' '),
-                                            style:
-                                                Theme.of(context).textTheme.bodyMedium,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodyMedium,
                                           ),
                                         ],
                                       ],
                                       const SizedBox(height: 12),
                                       Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
                                         children: [
                                           ElevatedButton.icon(
-                                            onPressed: () => _checkQuestion(exIndex),
+                                            onPressed: () =>
+                                                _checkQuestion(exIndex),
                                             icon: const Icon(Icons.check),
                                             label: const Text('Проверить'),
                                           ),
@@ -475,7 +497,9 @@ class _LessonScreenState extends State<LessonScreen> {
                                               isCorrect
                                                   ? Icons.check_circle
                                                   : Icons.cancel_outlined,
-                                              color: isCorrect ? Colors.green : Colors.red,
+                                              color: isCorrect
+                                                  ? Colors.green
+                                                  : Colors.red,
                                             ),
                                         ],
                                       ),
@@ -499,7 +523,8 @@ class _LessonScreenState extends State<LessonScreen> {
                                                 .bodySmall
                                                 ?.copyWith(
                                                     color: Colors.grey.shade800,
-                                                    fontWeight: FontWeight.w600),
+                                                    fontWeight:
+                                                        FontWeight.w600),
                                           ),
                                         ],
                                       ],
@@ -569,8 +594,8 @@ class _LessonScreenState extends State<LessonScreen> {
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         title: const Text('Отлично!'),
-        content:
-            Text('Вы завершили урок.\nВыполнено заданий: $completed из $total.'),
+        content: Text(
+            'Вы завершили урок.\nВыполнено заданий: $completed из $total.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),

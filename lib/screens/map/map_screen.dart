@@ -270,7 +270,8 @@ class _MapScreenState extends State<MapScreen>
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final height = math.max(constraints.maxHeight, constraints.maxWidth * 1.9);
+        final height =
+            math.max(constraints.maxHeight, constraints.maxWidth * 1.9);
         final width = constraints.maxWidth;
         final framePath = _currentFramePath;
 

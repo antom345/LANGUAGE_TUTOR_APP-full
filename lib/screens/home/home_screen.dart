@@ -2,10 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:language_tutor_app/models/character.dart';
 import 'package:language_tutor_app/models/lesson.dart';
 import 'package:language_tutor_app/screens/chat/chat_screen.dart';
+import 'package:language_tutor_app/screens/home/home_shell.dart';
 import 'package:language_tutor_app/services/character_service.dart';
+import 'package:language_tutor_app/ui/theme/app_theme.dart';
+import 'package:language_tutor_app/ui/widgets/app_scaffold.dart';
+import 'package:language_tutor_app/ui/widgets/buttons.dart';
+import 'package:language_tutor_app/ui/widgets/gradient_card.dart';
+import 'package:language_tutor_app/ui/widgets/segmented_control.dart';
 import 'package:language_tutor_app/utils/helpers.dart';
 import 'package:language_tutor_app/widgets/character_avatar.dart';
-import 'package:language_tutor_app/widgets/custom_button.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -35,142 +40,161 @@ class _AgeScreenState extends State<AgeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: RadialGradient(
-            colors: [
-              Color(0xFFEFF3FF),
-              Color(0xFFE9F7F5),
-              Color(0xFFFDF1FF),
-            ],
-            center: Alignment(-0.6, -0.6),
-            radius: 1.2,
-          ),
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.cake_outlined, size: 28),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Сколько вам лет?',
-                      style: Theme.of(context).textTheme.headlineMedium,
-                    ),
-                  ],
+    return AppScaffold(
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final isWide = !isMobileLayout(constraints);
+            return Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: isWide ? 480 : constraints.maxWidth - 32,
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Укажите возраст ползунком — так быстрее и удобнее.',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade700),
-                ),
-                const SizedBox(height: 24),
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Colors.white, Color(0xFFF7FAFF)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    borderRadius: BorderRadius.circular(28),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.06),
-                        blurRadius: 24,
-                        offset: const Offset(0, 12),
-                      ),
-                    ],
-                  ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            'Возраст',
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                          Row(
-                            children: [
-                              IconButton(
-                                onPressed: () => setState(
-                                  () => _age = (_age - 1).clamp(5, 80),
-                                ),
-                                icon: const Icon(Icons.remove_circle_outline),
+                      Text(
+                        'Сколько вам лет?',
+                        style: Theme.of(context).textTheme.headlineLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Укажите возраст ползунком — так быстрее и удобнее.',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 24),
+                      GradientCard(
+                        padding: const EdgeInsets.all(20),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Возраст',
+                                    style:
+                                        Theme.of(context).textTheme.titleMedium,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Slider(
+                                    value: _age,
+                                    min: 5,
+                                    max: 80,
+                                    divisions: 75,
+                                    label: '${_age.round()}',
+                                    activeColor: AppColors.colorPrimary,
+                                    onChanged: (v) => setState(() => _age = v),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: const [
+                                      Text('5'),
+                                      Text('80'),
+                                    ],
+                                  ),
+                                ],
                               ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                  vertical: 8,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Text(
-                                  '${_age.round()}',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .headlineSmall
-                                      ?.copyWith(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.primary,
-                                        fontWeight: FontWeight.bold,
+                            ),
+                            const SizedBox(width: 20),
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(
+                                    AppRadius.radiusLarge),
+                                border:
+                                    Border.all(color: AppColors.colorDivider),
+                                boxShadow: AppShadows.card,
+                              ),
+                              child: Column(
+                                children: [
+                                  _ageActionButton(
+                                    icon: Icons.remove,
+                                    onTap: () => setState(
+                                      () => _age = (_age - 1).clamp(5, 80),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 10,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.colorPrimary
+                                          .withOpacity(0.08),
+                                      borderRadius: BorderRadius.circular(
+                                        AppRadius.radiusMedium,
                                       ),
-                                ),
+                                    ),
+                                    child: Text(
+                                      '${_age.round()}',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineMedium
+                                          ?.copyWith(
+                                            color: AppColors.colorPrimaryDark,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  _ageActionButton(
+                                    icon: Icons.add,
+                                    onTap: () => setState(
+                                      () => _age = (_age + 1).clamp(5, 80),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              IconButton(
-                                onPressed: () => setState(
-                                  () => _age = (_age + 1).clamp(5, 80),
-                                ),
-                                icon: const Icon(Icons.add_circle_outline),
-                              ),
-                            ],
-                          ),
-                        ],
+                            ),
+                          ],
+                        ),
                       ),
-                      Slider(
-                        value: _age,
-                        min: 5,
-                        max: 80,
-                        divisions: 75,
-                        label: '${_age.round()}',
-                        activeColor: Theme.of(context).colorScheme.primary,
-                        onChanged: (v) => setState(() => _age = v),
-                      ),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: const [Text('5'), Text('80')],
+                      const Spacer(),
+                      _languageAvatarStrip(),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child:
+                            PrimaryButton(label: 'Далее', onPressed: _continue),
                       ),
                     ],
                   ),
                 ),
-                const Spacer(),
-                Row(
-                  children: [
-                    Expanded(child: _languageAvatarStrip()),
-                    const SizedBox(width: 12),
-                    SizedBox(
-                      width: 160,
-                      child: PrimaryCtaButton(label: 'Далее', onTap: _continue),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         ),
+      ),
+    );
+  }
+
+  Widget _ageActionButton({
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return SizedBox(
+      width: 44,
+      height: 44,
+      child: ElevatedButton(
+        onPressed: onTap,
+        style: ElevatedButton.styleFrom(
+          padding: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.radiusMedium),
+          ),
+          backgroundColor: AppColors.colorPrimary.withOpacity(0.14),
+          foregroundColor: AppColors.colorPrimary,
+          elevation: 0,
+        ),
+        child: Icon(icon, size: 20),
       ),
     );
   }
@@ -198,6 +222,147 @@ class _AgeScreenState extends State<AgeScreen> {
   }
 }
 
+class InterestsScreen extends StatefulWidget {
+  final int userAge;
+  final String userGender;
+
+  const InterestsScreen({
+    super.key,
+    required this.userAge,
+    required this.userGender,
+  });
+
+  @override
+  State<InterestsScreen> createState() => _InterestsScreenState();
+}
+
+class _InterestsScreenState extends State<InterestsScreen> {
+  static const _options = [
+    'Путешествия',
+    'Работа / Карьера',
+    'Учёба',
+    'Фильмы и сериалы',
+    'Музыка',
+    'Спорт',
+    'Технологии и IT',
+    'Еда и кулинария',
+    'Отношения',
+    'Игры',
+  ];
+
+  final Set<String> _selected = {};
+
+  void _toggle(String option) {
+    setState(() {
+      if (_selected.contains(option)) {
+        _selected.remove(option);
+      } else {
+        _selected.add(option);
+      }
+    });
+  }
+
+  void _finish(List<String> interests) {
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(
+        builder: (_) => HomeShell(
+          userAge: widget.userAge,
+          userGender: widget.userGender,
+          userInterests: interests,
+        ),
+      ),
+      (route) => false,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppScaffold(
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final isWide = !isMobileLayout(constraints);
+            return Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: isWide ? 520 : constraints.maxWidth - 24,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Что вам интересно?',
+                        style: Theme.of(context).textTheme.headlineLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Мы будем подбирать темы диалогов по вашим интересам.',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 20),
+                      GradientCard(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Wrap(
+                              spacing: 12,
+                              runSpacing: 12,
+                              children: [
+                                for (final option in _options)
+                                  ChoiceChip(
+                                    label: Text(option),
+                                    selected: _selected.contains(option),
+                                    onSelected: (_) => _toggle(option),
+                                    selectedColor: AppColors.colorPrimary
+                                        .withOpacity(0.16),
+                                    labelStyle: TextStyle(
+                                      color: _selected.contains(option)
+                                          ? AppColors.colorPrimaryDark
+                                          : AppColors.colorTextPrimary,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    backgroundColor: Colors.white,
+                                    side: const BorderSide(
+                                      color: AppColors.colorDivider,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Spacer(),
+                      Row(
+                        children: [
+                          TextButton(
+                            onPressed: () => _finish(const []),
+                            child: const Text('Пропустить'),
+                          ),
+                          const Spacer(),
+                          Expanded(
+                            flex: 2,
+                            child: PrimaryButton(
+                              label: 'Сохранить',
+                              onPressed: () => _finish(_selected.toList()),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
 class GenderScreen extends StatefulWidget {
   final int userAge;
   const GenderScreen({super.key, required this.userAge});
@@ -213,162 +378,86 @@ class _GenderScreenState extends State<GenderScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) =>
-            ChatListScreen(userAge: widget.userAge, userGender: _gender),
+            InterestsScreen(userAge: widget.userAge, userGender: _gender),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: RadialGradient(
-            colors: [
-              Color(0xFFEAF4FF),
-              Color(0xFFFDF2F8),
-              Color(0xFFE7FFF9),
-            ],
-            center: Alignment(0.6, -0.6),
-            radius: 1.1,
-          ),
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.account_circle_outlined, size: 28),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Укажите ваш пол',
-                      style: Theme.of(context).textTheme.headlineMedium,
-                    ),
-                  ],
+    return AppScaffold(
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final isWide = !isMobileLayout(constraints);
+            return Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: isWide ? 480 : constraints.maxWidth - 32,
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Возраст: ${widget.userAge} • Это поможет подобрать обращение.',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade700),
-                ),
-                const SizedBox(height: 24),
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Colors.white, Color(0xFFF8FBFF)],
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                    ),
-                    borderRadius: BorderRadius.circular(28),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.06),
-                        blurRadius: 24,
-                        offset: const Offset(0, 12),
-                      ),
-                    ],
-                  ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Выбор',
-                        style: Theme.of(context).textTheme.titleMedium,
+                        'Укажите ваш пол',
+                        style: Theme.of(context).textTheme.headlineLarge,
                       ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 10,
-                        children: [
-                          _genderTile(
-                            label: 'Не важно',
-                            value: 'unspecified',
-                            icon: Icons.all_inclusive,
-                            color: Colors.grey.shade600,
-                          ),
-                          _genderTile(
-                            label: 'Мужской',
-                            value: 'male',
-                            icon: Icons.male,
-                            color: const Color(0xFF1E88E5),
-                          ),
-                          _genderTile(
-                            label: 'Женский',
-                            value: 'female',
-                            icon: Icons.female,
-                            color: const Color(0xFFD81B60),
-                          ),
-                        ],
+                      const SizedBox(height: 8),
+                      Text(
+                        'Возраст: ${widget.userAge} · Это поможет подобрать обращение.',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 24),
+                      GradientCard(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Выбор',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            const SizedBox(height: 16),
+                            SegmentedControl<String>(
+                              value: _gender,
+                              onChanged: (value) =>
+                                  setState(() => _gender = value),
+                              items: [
+                                SegmentedControlItem(
+                                  label: 'Не важно',
+                                  value: 'unspecified',
+                                ),
+                                SegmentedControlItem(
+                                  label: 'Мужской',
+                                  value: 'male',
+                                ),
+                                SegmentedControlItem(
+                                  label: 'Женский',
+                                  value: 'female',
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Spacer(),
+                      _languageAvatarStrip(),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child: PrimaryButton(
+                          label: 'Далее',
+                          onPressed: _continue,
+                        ),
                       ),
                     ],
                   ),
                 ),
-                const Spacer(),
-                Row(
-                  children: [
-                    Expanded(child: _languageAvatarStrip()),
-                    const SizedBox(width: 12),
-                    SizedBox(
-                      width: 160,
-                      child: PrimaryCtaButton(label: 'Далее', onTap: _continue),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _genderTile({
-    required String label,
-    required String value,
-    required IconData icon,
-    required Color color,
-  }) {
-    final selected = _gender == value;
-    return InkWell(
-      onTap: () => setState(() => _gender = value),
-      borderRadius: BorderRadius.circular(14),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: selected ? color.withOpacity(0.12) : Colors.grey.shade50,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: selected ? color : Colors.grey.shade200,
-            width: 1.2,
-          ),
-          boxShadow: [
-            if (selected)
-              BoxShadow(
-                color: color.withOpacity(0.18),
-                blurRadius: 14,
-                offset: const Offset(0, 8),
               ),
-          ],
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: selected ? color : Colors.grey.shade600),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: TextStyle(
-                color: selected ? color : Colors.grey.shade800,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
+            );
+          },
         ),
       ),
     );
@@ -553,7 +642,9 @@ class ChatListScreen extends StatelessWidget {
                                   const SizedBox(height: 4),
                                   Text(
                                     'Нажмите чтобы начать диалог',
-                                    style: Theme.of(context).textTheme.bodySmall
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
                                         ?.copyWith(color: Colors.grey.shade600),
                                   ),
                                 ],
@@ -890,7 +981,8 @@ class _PlacementTestScreenState extends State<PlacementTestScreen> {
   @override
   void initState() {
     super.initState();
-    _questions = kPlacementTests[widget.language] ?? kPlacementTests['English']!;
+    _questions =
+        kPlacementTests[widget.language] ?? kPlacementTests['English']!;
   }
 
   Future<void> _finishTest() async {
@@ -1019,10 +1111,7 @@ class _PlacementTestScreenState extends State<PlacementTestScreen> {
                     ),
                     child: Text(
                       'Вопрос $questionNumber из $total',
-                      style: Theme.of(context)
-                          .textTheme
-                          .labelMedium
-                          ?.copyWith(
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
                             color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.w600,
                           ),
@@ -1099,9 +1188,7 @@ class _PlacementTestScreenState extends State<PlacementTestScreen> {
                                     : Colors.white,
                                 border: Border.all(
                                   color: isSelected
-                                      ? Theme.of(context)
-                                          .colorScheme
-                                          .primary
+                                      ? Theme.of(context).colorScheme.primary
                                       : Colors.grey.shade400,
                                 ),
                               ),
@@ -1293,7 +1380,8 @@ final Map<String, List<PlacementQuestion>> kPlacementTests = {
       correctIndex: 1,
     ),
     PlacementQuestion(
-      question: 'Choose the correct phrasal verb: "He finally ___ smoking last year."',
+      question:
+          'Choose the correct phrasal verb: "He finally ___ smoking last year."',
       options: [
         'gave up',
         'gave in',
@@ -1368,7 +1456,8 @@ final Map<String, List<PlacementQuestion>> kPlacementTests = {
       correctIndex: 0,
     ),
     PlacementQuestion(
-      question: 'Ähnliche Bedeutung: Welches Wort ist am nächsten zu "traurig"?',
+      question:
+          'Ähnliche Bedeutung: Welches Wort ist am nächsten zu "traurig"?',
       options: [
         'glücklich',
         'froh',

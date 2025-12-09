@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:language_tutor_app/app/routes.dart';
 import 'package:language_tutor_app/screens/home/home_screen.dart';
+import 'package:language_tutor_app/ui/theme/app_theme.dart';
 
 class LanguageTutorApp extends StatelessWidget {
   const LanguageTutorApp({super.key});
@@ -9,11 +10,7 @@ class LanguageTutorApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Language Tutor',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4B5BB5)),
-        useMaterial3: true,
-        fontFamily: 'SF Pro Text',
-      ),
+      theme: AppTheme.lightTheme,
       home: const HomeScreen(),
       routes: appRoutes,
     );

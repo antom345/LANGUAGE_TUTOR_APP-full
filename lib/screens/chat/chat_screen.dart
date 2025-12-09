@@ -18,11 +18,15 @@ import 'package:language_tutor_app/screens/map/map_screen.dart';
 import 'package:language_tutor_app/services/api_service.dart';
 import 'package:language_tutor_app/services/character_service.dart';
 import 'package:language_tutor_app/services/tts_player.dart';
+import 'package:language_tutor_app/ui/theme/app_theme.dart';
+import 'package:language_tutor_app/ui/widgets/app_scaffold.dart';
+import 'package:language_tutor_app/ui/widgets/buttons.dart';
+import 'package:language_tutor_app/ui/widgets/empty_state.dart';
+import 'package:language_tutor_app/ui/widgets/gradient_card.dart';
+import 'package:language_tutor_app/ui/widgets/segmented_control.dart';
 import 'package:language_tutor_app/utils/helpers.dart';
 import 'package:language_tutor_app/widgets/character_avatar.dart';
-import 'package:language_tutor_app/widgets/custom_button.dart';
 import 'package:language_tutor_app/widgets/looping_png_animation.dart';
-import 'package:language_tutor_app/widgets/speech_button.dart';
 
 class ChatScreenArgs {
   final String language;
@@ -69,6 +73,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _inputController = TextEditingController();
   bool _isSending = false;
   final List<SavedWord> _savedWords = [];
+  int _tabIndex = 0;
 
   final TtsPlayer _ttsPlayer = TtsPlayer();
   late final List<String> _characterFrames;
@@ -203,7 +208,8 @@ class _ChatScreenState extends State<ChatScreen> {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
             return AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18)),
               title: const Text('Что вам интересно?'),
               content: SingleChildScrollView(
                 child: Wrap(
@@ -273,7 +279,8 @@ class _ChatScreenState extends State<ChatScreen> {
         age: widget.userAge,
         gender: gender,
         interests: _userInterests,
-        goals: 'Improve ${widget.language} through conversation and vocabulary.',
+        goals:
+            'Improve ${widget.language} through conversation and vocabulary.',
       );
 
       setState(() {
@@ -362,7 +369,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (tooShortByTime || tooShortBySize) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Запись слишком короткая — удерживайте дольше')),
+          const SnackBar(
+              content: Text('Запись слишком короткая — удерживайте дольше')),
         );
       }
     } else {
@@ -538,7 +546,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         if (fetchedBytes == null || fetchedBytes.isEmpty) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content: Text('Аудио недоступно, попробуйте позже'),
+                              content:
+                                  Text('Аудио недоступно, попробуйте позже'),
                             ),
                           );
                           return;
@@ -560,9 +569,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     },
                   ),
                   IconButton(
-                    tooltip: isSaved
-                        ? 'Удалить из словаря'
-                        : 'Добавить в словарь',
+                    tooltip:
+                        isSaved ? 'Удалить из словаря' : 'Добавить в словарь',
                     icon: Icon(
                       isSaved ? Icons.star : Icons.star_border,
                       color: Colors.amber.shade700,
@@ -625,50 +633,159 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     final partnerName = _detectPartnerNameFromMessages();
 
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
-        appBar: AppBar(
-          leadingWidth: 120,
-          leading: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () => Navigator.of(context).maybePop(),
-              ),
-              _buildCharacterAvatar(),
-            ],
-          ),
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(partnerName),
-              Text(
-                '${widget.language} · level ${widget.level}',
-                style: Theme.of(context)
-                    .textTheme
-                    .labelMedium
-                    ?.copyWith(color: Colors.grey.shade600),
-              ),
-            ],
-          ),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: 'Chat'),
-              Tab(text: 'Dictionary'),
-              Tab(text: 'Course'),
-            ],
-          ),
+    return AppScaffold(
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.of(context).maybePop(),
         ),
-        body: TabBarView(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            SafeArea(child: _buildChatTab()),
-            SafeArea(child: _buildDictionaryTab()),
-            SafeArea(child: _buildCourseTab()),
+            Text(partnerName),
+            Text(
+              '${widget.language} · level ${widget.level}',
+              style: Theme.of(context)
+                  .textTheme
+                  .labelMedium
+                  ?.copyWith(color: Colors.grey.shade600),
+            ),
           ],
         ),
+        centerTitle: true,
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: _buildCharacterAvatar(),
+          ),
+        ],
       ),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final size = MediaQuery.of(context).size;
+            final heroHeight = size.height * 0.3;
+            final isMobile = isMobileLayout(constraints);
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                  child: _buildHeroCard(
+                    partnerName: partnerName,
+                    isMobile: isMobile,
+                    characterHeight: heroHeight,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: SegmentedControl<int>(
+                    value: _tabIndex,
+                    onChanged: (value) => setState(() => _tabIndex = value),
+                    items: [
+                      SegmentedControlItem(label: 'Chat', value: 0),
+                      SegmentedControlItem(label: 'Dictionary', value: 1),
+                      SegmentedControlItem(label: 'Course', value: 2),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: IndexedStack(
+                    index: _tabIndex,
+                    children: [
+                      _buildChatTab(),
+                      _buildDictionaryTab(),
+                      _buildCourseTab(),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeroCard({
+    required String partnerName,
+    required bool isMobile,
+    required double characterHeight,
+  }) {
+    final look = _characterLook;
+    return GradientCard(
+      padding: const EdgeInsets.all(16),
+      child: isMobile
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildHeroText(partnerName),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: characterHeight,
+                  width: double.infinity,
+                  child: _buildCharacterStage(look),
+                ),
+              ],
+            )
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: _buildHeroText(partnerName)),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: SizedBox(
+                    height: characterHeight,
+                    child: _buildCharacterStage(look),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildHeroText(String partnerName) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Сегодняшняя цель',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          _progressLabel,
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        const SizedBox(height: 12),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.radiusMedium),
+          child: LinearProgressIndicator(
+            value: _progressValue,
+            minHeight: 10,
+            color: AppColors.colorPrimary,
+            backgroundColor: AppColors.colorDivider,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Chip(
+              label: Text(
+                partnerName,
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              backgroundColor: AppColors.colorPrimary.withOpacity(0.12),
+            ),
+            const SizedBox(width: 8),
+            Chip(
+              label: Text('Level ${widget.level}'),
+              backgroundColor: AppColors.colorAccentBlue.withOpacity(0.18),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
@@ -698,23 +815,20 @@ class _ChatScreenState extends State<ChatScreen> {
     final alignment = isUser ? Alignment.centerRight : Alignment.centerLeft;
 
     Color bgColor;
-    Color textColor;
+    Color textColor = AppColors.colorTextPrimary;
     String name;
-    final accent = _characterLook.accentColor;
-    final userBg = const Color(0xFFE8F0FF);
-    final userText = const Color(0xFF0F1C3F);
+    final accent = AppColors.colorPrimary;
 
     if (msg.isCorrections) {
-      bgColor = const Color(0xFFFFF7E0);
-      textColor = const Color(0xFF6A4A00);
+      bgColor = AppColors.colorAccentYellow.withOpacity(0.6);
+      textColor = AppColors.colorPrimaryDark;
       name = 'Corrections';
     } else if (isUser) {
-      bgColor = userBg;
-      textColor = userText;
-      name = 'You';
+      bgColor = Colors.white;
+      name = 'Вы';
     } else {
-      bgColor = accent.withOpacity(0.16);
-      textColor = const Color(0xFF1C1C1C);
+      bgColor = accent;
+      textColor = Colors.white;
       name = _detectPartnerNameFromMessages();
     }
 
@@ -732,7 +846,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   color: textColor,
                   fontSize: 14,
                   decoration: TextDecoration.underline,
-                  decorationStyle: TextDecorationStyle.dotted,
+                  decorationColor: textColor.withOpacity(0.5),
                 ),
               ),
             ),
@@ -754,56 +868,26 @@ class _ChatScreenState extends State<ChatScreen> {
         margin: const EdgeInsets.symmetric(vertical: 6),
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: msg.isCorrections
-              ? bgColor
-              : isUser
-                  ? bgColor
-                  : null,
-          gradient: !isUser && !msg.isCorrections
-              ? LinearGradient(
-                  colors: [
-                    lighten(accent, 0.2).withOpacity(0.65),
-                    bgColor,
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                )
-              : null,
-          border: isUser
-              ? Border.all(color: darken(userBg, 0.08).withOpacity(0.6))
-              : null,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(22),
-            topRight: const Radius.circular(22),
-            bottomLeft: Radius.circular(isUser ? 22 : 8),
-            bottomRight: Radius.circular(isUser ? 8 : 22),
-          ),
+          color: bgColor,
+          borderRadius: BorderRadius.circular(20),
+          border: isUser ? Border.all(color: AppColors.colorDivider) : null,
           boxShadow: [
-            if (isUser)
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 16,
-                offset: const Offset(0, 6),
-              ),
-            if (!isUser && !msg.isCorrections)
-              BoxShadow(
-                color: accent.withOpacity(0.12),
-                blurRadius: 18,
-                offset: const Offset(0, 8),
-              ),
+            BoxShadow(
+              color: Colors.black.withOpacity(isUser ? 0.06 : 0.12),
+              blurRadius: 16,
+              offset: const Offset(0, 8),
+            ),
           ],
         ),
         child: Column(
-          crossAxisAlignment: isUser
-              ? CrossAxisAlignment.end
-              : CrossAxisAlignment.start,
+          crossAxisAlignment:
+              isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
             Text(
               name,
               style: TextStyle(
-                color: msg.isCorrections
-                    ? Colors.black54
-                    : Colors.grey.shade700,
+                color:
+                    msg.isCorrections ? Colors.black54 : Colors.grey.shade700,
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
               ),
@@ -849,167 +933,42 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildChatTab() {
-    final look = _characterLook;
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            lighten(look.primaryColor, 0.25),
-            Colors.white,
-            lighten(look.accentColor, 0.25),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
-      child: Row(
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
         children: [
           Expanded(
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 14,
-                    ),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          lighten(look.accentColor, 0.25),
-                          Colors.white,
-                        ],
-                        begin: Alignment.centerLeft,
-                        end: Alignment.centerRight,
-                      ),
-                      borderRadius: BorderRadius.circular(22),
-                      boxShadow: [
-                        BoxShadow(
-                          color: look.accentColor.withOpacity(0.15),
-                          blurRadius: 16,
-                          offset: const Offset(0, 10),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.8),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            Icons.star_rate_rounded,
-                            color: look.accentColor,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              LinearProgressIndicator(
-                                value: _progressValue,
-                                minHeight: 8,
-                                borderRadius: BorderRadius.circular(8),
-                                backgroundColor:
-                                    Colors.white.withOpacity(0.6),
-                                color: look.accentColor,
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                _progressLabel,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .labelMedium
-                                    ?.copyWith(
-                                      color: Colors.grey.shade800,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          '${_userWordCount}/${_currentLevel > _levelTargets.length ? _userWordCount : _levelTargets[_currentLevel - 1]}',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                      ],
-                    ),
-                  ),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(AppRadius.radiusLarge),
+                boxShadow: AppShadows.card,
+              ),
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
                 ),
-                Expanded(
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(26),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.05),
-                          blurRadius: 18,
-                          offset: const Offset(0, 6),
-                        ),
-                      ],
-                    ),
-                    child: ListView.builder(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      itemCount: _messages.length +
-                          ((_isSending && _messages.isNotEmpty) ? 1 : 0),
-                      itemBuilder: (context, index) {
-                        final showTyping =
-                            _isSending && _messages.isNotEmpty;
-                        if (showTyping && index == _messages.length) {
-                          return _buildTypingIndicator();
-                        }
-                        final msg = _messages[index];
-                        final isUser = msg.role == 'user';
-                        return _buildMessageBubble(msg, isUser);
-                      },
-                    ),
-                  ),
-                ),
-                Container(
-                  margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.9),
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.05),
-                        blurRadius: 12,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: _buildInputBar(),
-                ),
-              ],
+                itemCount: _messages.length +
+                    ((_isSending && _messages.isNotEmpty) ? 1 : 0),
+                itemBuilder: (context, index) {
+                  final showTyping = _isSending && _messages.isNotEmpty;
+                  if (showTyping && index == _messages.length) {
+                    return _buildTypingIndicator();
+                  }
+                  final msg = _messages[index];
+                  final isUser = msg.role == 'user';
+                  return _buildMessageBubble(msg, isUser);
+                },
+              ),
             ),
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            flex: 1,
-            child: _buildCharacterStage(look),
+          const SizedBox(height: 12),
+          SafeArea(
+            minimum: const EdgeInsets.only(bottom: 8),
+            top: false,
+            child: _buildInputBar(),
           ),
-          const SizedBox(width: 12),
         ],
       ),
     );
@@ -1038,8 +997,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           shape: BoxShape.circle,
                           gradient: LinearGradient(
                             colors: [
-                              lighten(look.primaryColor, 0.4)
-                                  .withOpacity(0.35),
+                              lighten(look.primaryColor, 0.4).withOpacity(0.35),
                               Colors.white.withOpacity(0.0),
                             ],
                             begin: Alignment.topLeft,
@@ -1065,8 +1023,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           shape: BoxShape.circle,
                           gradient: LinearGradient(
                             colors: [
-                              lighten(look.accentColor, 0.35)
-                                  .withOpacity(0.4),
+                              lighten(look.accentColor, 0.35).withOpacity(0.4),
                               Colors.white.withOpacity(0.0),
                             ],
                             begin: Alignment.bottomRight,
@@ -1160,17 +1117,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildDictionaryTab() {
     if (_savedWords.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            'Вы ещё не добавили слова. Нажмите на слово в чате и выделите его звездой, чтобы сохранить.',
-            textAlign: TextAlign.center,
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(color: Colors.grey.shade600),
-          ),
+      return const Center(
+        child: EmptyState(
+          icon: Icons.star_border_rounded,
+          title: 'Пока пусто',
+          message:
+              'Нажмите на слово в чате и отметьте его звездой, чтобы добавить в словарь',
         ),
       );
     }
@@ -1182,64 +1134,69 @@ class _ChatScreenState extends State<ChatScreen> {
       itemBuilder: (context, index) {
         final saved = _savedWords[index];
 
-        return Card(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          elevation: 2,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+        return GradientCard(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.colorPrimary.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.star_rounded,
+                  color: AppColors.colorPrimary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text(
-                        saved.word,
+                    Text(
+                      saved.word,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      saved.translation,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: AppColors.colorPrimaryDark,
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    if (saved.example.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        saved.example,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                    if (saved.exampleTranslation.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        saved.exampleTranslation,
                         style: Theme.of(context)
                             .textTheme
-                            .titleLarge
-                            ?.copyWith(fontWeight: FontWeight.bold),
+                            .bodyMedium
+                            ?.copyWith(color: AppColors.colorTextSecondary),
                       ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Удалить из словаря',
-                      onPressed: () => _removeSavedWord(saved.word),
-                    ),
+                    ],
                   ],
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  saved.translation,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                ),
-                if (saved.example.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    saved.example,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ],
-                if (saved.exampleTranslation.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    saved.exampleTranslation,
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodyMedium
-                        ?.copyWith(color: Colors.grey.shade700),
-                  ),
-                ],
-              ],
-            ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'Удалить из словаря',
+                onPressed: () => _removeSavedWord(saved.word),
+              ),
+            ],
           ),
         );
       },
@@ -1260,27 +1217,8 @@ class _ChatScreenState extends State<ChatScreen> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            Container(
+            GradientCard(
               padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    lighten(look.primaryColor, 0.3),
-                    lighten(look.accentColor, 0.2),
-                    Colors.white,
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(26),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 24,
-                    offset: const Offset(0, 12),
-                  ),
-                ],
-              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1289,71 +1227,61 @@ class _ChatScreenState extends State<ChatScreen> {
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.9),
+                          color: AppColors.colorPrimary.withOpacity(0.12),
                           shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.06),
-                              blurRadius: 10,
-                              offset: const Offset(0, 5),
-                            ),
-                          ],
                         ),
-                        child: Icon(
+                        child: const Icon(
                           Icons.auto_graph_rounded,
-                          color: look.accentColor,
+                          color: AppColors.colorPrimary,
                         ),
                       ),
                       const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Личный курс по ${widget.language}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleMedium
-                                  ?.copyWith(fontWeight: FontWeight.w700),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Текущий уровень: ${widget.level}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(color: Colors.grey.shade700),
-                            ),
-                          ],
-                        ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Личный курс по ${widget.language}',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Текущий уровень: ${widget.level}',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ],
                       ),
                     ],
                   ),
                   const SizedBox(height: 16),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      _CoursePill(
-                        icon: Icons.psychology_alt_outlined,
-                        label: 'Учитываем вводный тест',
-                        color: look.accentColor,
-                      ),
-                      _CoursePill(
-                        icon: Icons.menu_book_outlined,
-                        label: 'Грамматика + словарь',
-                        color: look.primaryColor,
-                      ),
-                    ],
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        _CoursePill(
+                          icon: Icons.psychology_alt_outlined,
+                          label: 'Учитываем вводный тест',
+                          color: look.accentColor,
+                        ),
+                        const SizedBox(width: 8),
+                        _CoursePill(
+                          icon: Icons.menu_book_outlined,
+                          label: 'Грамматика + словарь',
+                          color: look.primaryColor,
+                        ),
+                        const SizedBox(width: 8),
+                        _CoursePill(
+                          icon: Icons.auto_stories_outlined,
+                          label: 'Диалоги + произношение',
+                          color: AppColors.colorAccentPink,
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 14),
                   Text(
                     'Сгенерируйте курс из нескольких уровней, адаптированный под ваш возраст, цели и результат теста. '
-                    'Каждый уровень содержит уроки с упражнениями как в тренажёре.',
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodyMedium
-                        ?.copyWith(color: Colors.grey.shade800),
+                    'Каждый уровень содержит уроки с упражнениями и словарём.',
+                    style: Theme.of(context).textTheme.bodyMedium,
                   ),
                   if (_courseError != null) ...[
                     const SizedBox(height: 12),
@@ -1364,13 +1292,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   ],
                   const SizedBox(height: 18),
                   Align(
-                    alignment: Alignment.centerRight,
-                    child: SizedBox(
-                      width: 200,
-                      child: PrimaryCtaButton(
-                        label: 'Сгенерировать курс',
-                        onTap: _loadCoursePlan,
-                      ),
+                    alignment: Alignment.bottomRight,
+                    child: PrimaryButton(
+                      label: 'Сгенерировать курс',
+                      expand: false,
+                      onPressed: _loadCoursePlan,
                     ),
                   ),
                 ],
@@ -1416,54 +1342,91 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildInputBar() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _inputController,
-              minLines: 1,
-              maxLines: 4,
-              decoration: InputDecoration(
-                hintText: 'Write a message…',
-                filled: true,
-                fillColor: Colors.grey.shade50,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: BorderSide.none,
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(AppRadius.radiusLarge),
+          border: Border.all(
+            color: AppColors.colorPrimary.withOpacity(0.2),
+          ),
+          boxShadow: AppShadows.card,
+        ),
+        child: Row(
+          children: [
+            GestureDetector(
+              onTapDown: _isSending ? null : (_) => _startRecording(),
+              onTapUp: _isSending ? null : (_) => _stopRecordingAndSend(),
+              onTapCancel: _isSending ? null : _cancelRecording,
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: AppColors.colorPrimary,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.colorPrimary.withOpacity(0.3),
+                      blurRadius: 14,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
                 ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: BorderSide(
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
+                child: Icon(
+                  _isRecording ? Icons.mic : Icons.mic_none,
+                  color: Colors.white,
                 ),
               ),
-              onSubmitted: (_) => _sendUserMessage(),
             ),
-          ),
-          const SizedBox(width: 8),
-          SpeechButton(
-            isRecording: _isRecording,
-            onTapDown: _isSending ? null : _startRecording,
-            onTapUp: _isSending ? null : _stopRecordingAndSend,
-            onCancel: _isSending ? null : _cancelRecording,
-          ),
-          const SizedBox(width: 4),
-          IconButton(
-            icon: _isSending
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.send),
-            color: Theme.of(context).colorScheme.primary,
-            onPressed: _isSending ? null : _sendUserMessage,
-          ),
-        ],
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                controller: _inputController,
+                minLines: 1,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  hintText: 'Напишите сообщение…',
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                ),
+                onSubmitted: (_) => _sendUserMessage(),
+              ),
+            ),
+            const SizedBox(width: 10),
+            GestureDetector(
+              onTap: _isSending ? null : _sendUserMessage,
+              child: Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: AppColors.colorPrimary,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.colorPrimary.withOpacity(0.28),
+                      blurRadius: 14,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: _isSending
+                    ? const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      )
+                    : const Icon(
+                        Icons.send_rounded,
+                        color: Colors.white,
+                      ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1640,7 +1603,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Text(
                                           lesson.title,
