@@ -1,0 +1,128 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
+import 'package:language_tutor_app/models/message.dart';
+import 'package:language_tutor_app/services/api_service.dart';
+
+class TranslationResult {
+  final String translation;
+  final String example;
+  final String exampleTranslation;
+  final String? audioBase64;
+
+  TranslationResult({
+    required this.translation,
+    required this.example,
+    required this.exampleTranslation,
+    this.audioBase64,
+  });
+}
+
+class ChatController {
+  final String language;
+  final String level;
+  final String topic;
+  final String userGender;
+  final int? userAge;
+  final String partnerGender;
+
+  ChatController({
+    required this.language,
+    required this.level,
+    required this.topic,
+    required this.userGender,
+    required this.userAge,
+    required this.partnerGender,
+  });
+
+  Future<Map<String, dynamic>> sendChat(
+    List<ChatMessage> messages, {
+    required bool initial,
+  }) async {
+    final messagesPayload = initial
+        ? <Map<String, String>>[]
+        : _buildMessagesPayload(messages);
+
+    return ApiService.sendChat(
+      messages: messagesPayload,
+      language: language,
+      topic: topic,
+      level: level,
+      userGender: userGender,
+      userAge: userAge,
+      partnerGender: partnerGender,
+    );
+  }
+
+  Future<TranslationResult> translateWord(String word) async {
+    final data = await ApiService.translateWord(
+      word: word,
+      language: language,
+      withAudio: true,
+    );
+    return TranslationResult(
+      translation: data['translation'] as String? ?? 'нет данных',
+      example: data['example'] as String? ?? 'нет примера',
+      exampleTranslation:
+          data['example_translation'] as String? ?? 'нет перевода примера',
+      audioBase64: data['audio_base64'] as String?,
+    );
+  }
+
+  Future<Uint8List?> fetchWordAudioBytes(String word) async {
+    final data = await ApiService.translateWord(
+      word: word,
+      language: language,
+      withAudio: true,
+    );
+    final audio = data['audio_base64'] as String?;
+    if (audio == null || audio.isEmpty) return null;
+    try {
+      return base64Decode(audio);
+    } catch (e, st) {
+      debugPrint('TTS decode error: $e\n$st');
+      return null;
+    }
+  }
+
+  Future<String> speechToText(File file) async {
+    final langCode = _languageCodeFromName(language);
+    return ApiService.speechToText(
+      audioFile: file,
+      languageCode: langCode,
+    );
+  }
+
+  List<Map<String, String>> _buildMessagesPayload(List<ChatMessage> messages) {
+    final items = messages
+        .where((m) => !m.isCorrections)
+        .map((m) => {'role': m.role, 'content': m.text})
+        .toList();
+
+    if (items.length <= 5) return items;
+    return items.sublist(items.length - 5);
+  }
+
+  String _languageCodeFromName(String language) {
+    switch (language) {
+      case 'English':
+        return 'en';
+      case 'German':
+        return 'de';
+      case 'French':
+        return 'fr';
+      case 'Spanish':
+        return 'es';
+      case 'Italian':
+        return 'it';
+      case 'Korean':
+        return 'ko';
+      case 'Russian':
+        return 'ru';
+      default:
+        return 'en';
+    }
+  }
+}
