@@ -11,6 +11,8 @@ from typing import Dict, Any
 from io import BytesIO
 import subprocess  # для запуска piper через команду
 import logging
+import tempfile
+import shlex
 
 logger = logging.getLogger("language_tutor_backend")
 
@@ -52,7 +54,22 @@ LANG_ALIASES: Dict[str, list[str]] = {
 }
 
 # Какой бинарник Piper использовать — настоящий путь на RunPod
-PIPER_BIN = "/workspace/langapp/piper_bin/piper/piper"
+PIPER_BIN = "/workspace/langapp/piper/piper_bin"
+
+
+def _piper_env() -> Dict[str, str]:
+    """Return env for Piper with required library/espeak paths ensured."""
+    env = os.environ.copy()
+
+    piper_lib_dir = os.path.join(os.path.dirname(PIPER_BIN), "piper")
+    ld_paths = [piper_lib_dir]
+    if env.get("LD_LIBRARY_PATH"):
+        ld_paths.append(env["LD_LIBRARY_PATH"])
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(ld_paths)
+
+    env.setdefault("ESPEAK_DATA", os.path.join(piper_lib_dir, "espeak-ng-data"))
+    env.setdefault("PIPER_PHONEMIZER_ESPEAK_DATA", env["ESPEAK_DATA"])
+    return env
 
 
 def normalize_lang_code(language: str) -> str:
@@ -88,7 +105,7 @@ def normalize_lang_code(language: str) -> str:
 
 def synthesize_with_piper(text: str, language: str) -> bytes:
     """
-    Озвучка текста через Piper. Возвращает сырые аудиобайты (PCM),
+    Озвучка текста через Piper. Возвращает сырые аудиобайты (WAV/PCM),
     которые мы потом кодируем в base64 и отдаём фронту.
     """
     lang = normalize_lang_code(language)
@@ -103,21 +120,34 @@ def synthesize_with_piper(text: str, language: str) -> bytes:
     if not os.path.exists(model_path):
         raise RuntimeError(f"Файл модели Piper не найден: {model_path}")
 
-    try:
-        # Piper читает текст из stdin, отдаёт аудио в stdout
-        process = subprocess.run(
-    [PIPER_BIN, "--model", model_path, "--output_file", "-"],
-    input=text.encode("utf-8"),
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    check=True,
-)
+    # Гарантируем, что Piper видит свои .so и espeak-ng-data
+    env = os.environ.copy()
+    piper_lib_dir = "/workspace/langapp/piper/piper"
+    espeak_data_dir = "/workspace/langapp/piper/piper/espeak-ng-data"
 
+    env["LD_LIBRARY_PATH"] = f"{piper_lib_dir}:" + env.get("LD_LIBRARY_PATH", "")
+    env["ESPEAK_DATA"] = espeak_data_dir
+    env["ESPEAKNG_DATA"] = espeak_data_dir
+
+    try:
+        # Piper читает текст из stdin, отдаёт WAV в stdout
+        process = subprocess.run(
+            [
+                PIPER_BIN,
+                "--model", model_path,
+                "--espeak-data", espeak_data_dir,
+                "--output_file", "-",
+            ],
+            input=text.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            env=env,
+        )
     except FileNotFoundError:
         raise RuntimeError(
-            "Команда 'piper' не найдена. "
-            "Проверь, что Piper установлен и находится в PATH, "
-            "или пропиши полный путь к бинарнику в переменной PIPER_BIN."
+            "Команда Piper не найдена. "
+            "Проверь, что PIPER_BIN указывает на правильный бинарник."
         )
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
@@ -126,6 +156,7 @@ def synthesize_with_piper(text: str, language: str) -> bytes:
         )
 
     return process.stdout
+
 
 # ==================   КОНЕЦ БЛОКА PIPER   ==================
 
@@ -580,7 +611,7 @@ def synthesize_tts(text: str, language: str) -> Optional[str]:
         if audio_bytes:
             return base64.b64encode(audio_bytes).decode("utf-8")
     except Exception as e:
-        print("[TTS] error:", e)
+        logger.exception("[TTS] error while calling external TTS: %s", e)
 
     return None
 
@@ -780,11 +811,11 @@ Answer STRICTLY as JSON, without any extra text:
         try:
             text = (word or "").strip()
             if text:
-                print(f"[TTS] Piper TTS for word={text!r}, language={language!r}")
+                logger.info("[TTS] Piper synthesis start language=%s text=%r", language, text)
                 audio_bytes = synthesize_with_piper(text, language)
                 audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
         except Exception as e:
-            print("TTS ERROR (Piper):", e)
+            logger.exception("TTS ERROR (Piper) language=%s text=%r", language, word)
             audio_b64 = None
 
     return TranslateResponse(
