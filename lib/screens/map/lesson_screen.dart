@@ -227,7 +227,7 @@ class _LessonScreenState extends State<LessonScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          _error!,
+                          'Не удалось загрузить урок. Попробуйте ещё раз.',
                           textAlign: TextAlign.center,
                         ),
                         const SizedBox(height: 12),
@@ -245,6 +245,7 @@ class _LessonScreenState extends State<LessonScreen> {
                       children: [
                         Expanded(
                           child: PageView.builder(
+                            physics: const NeverScrollableScrollPhysics(),
                             controller: _pageController,
                             onPageChanged: (i) =>
                                 setState(() => _currentPage = i),
@@ -535,21 +536,31 @@ class _LessonScreenState extends State<LessonScreen> {
                             },
                           ),
                         ),
-                        _LessonPager(
-                          currentPage: _currentPage,
-                          totalPages: (content.exercises.length + 1),
-                          onNext: _goNextPage,
-                          onPrev: _goPrevPage,
-                        ),
-                        if (_currentPage == content.exercises.length)
-                          Padding(
-                            padding: const EdgeInsets.only(
-                                left: 16, right: 16, bottom: 16),
-                            child: PrimaryCtaButton(
-                              label: 'Завершить урок',
-                              onTap: _finishLesson,
-                            ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _LessonPager(
+                                currentPage: _currentPage,
+                                totalPages: (content.exercises.length + 1),
+                                onNext: _goNextPage,
+                                onPrev: _goPrevPage,
+                              ),
+                              const SizedBox(height: 8),
+                              PrimaryCtaButton(
+                                label: _currentPage ==
+                                        content.exercises.length
+                                    ? 'Завершить'
+                                    : 'Далее',
+                                onTap: _currentPage ==
+                                        content.exercises.length
+                                    ? _finishLesson
+                                    : _goNextPage,
+                              ),
+                            ],
                           ),
+                        ),
                       ],
                     ),
     );

@@ -4,17 +4,17 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import 'package:language_tutor_app/models/character.dart';
 import 'package:language_tutor_app/models/message.dart';
 import 'package:language_tutor_app/screens/chat/chat_controller.dart';
-import 'package:language_tutor_app/services/character_service.dart';
-import 'package:language_tutor_app/services/tts_player.dart';
 import 'package:language_tutor_app/ui/theme/app_theme.dart';
 import 'package:language_tutor_app/ui/widgets/app_scaffold.dart';
 import 'package:language_tutor_app/widgets/character_avatar.dart';
+import 'package:language_tutor_app/services/character_service.dart';
 
 class ChatHistoryScreenArgs {
   final String learningLanguage;
@@ -136,7 +136,7 @@ class _ChatViewState extends State<ChatView> {
   final TextEditingController _inputController = TextEditingController();
   bool _isSending = false;
   final List<SavedWord> _savedWords = [];
-  final TtsPlayer _ttsPlayer = TtsPlayer();
+  final AudioPlayer _audioPlayer = AudioPlayer();
 
   final AudioRecorder _audioRecorder = AudioRecorder();
   bool _isRecording = false;
@@ -166,14 +166,58 @@ class _ChatViewState extends State<ChatView> {
     _startConversation();
   }
 
-  Future<bool> _playTtsBytes(Uint8List bytes) {
-    return _ttsPlayer.playBytes(bytes);
+  Future<bool> _playTtsBytes(Uint8List bytes) async {
+    if (bytes.isEmpty) {
+      debugPrint('TTS: empty bytes, skip');
+      return false;
+    }
+
+    try {
+      final dir = await getTemporaryDirectory();
+      final filePath =
+          '${dir.path}/tts_${DateTime.now().millisecondsSinceEpoch}.wav';
+      final file = File(filePath);
+      await file.writeAsBytes(bytes, flush: true);
+
+      debugPrint(
+        'TTS: temp file saved to $filePath (${bytes.lengthInBytes} bytes)',
+      );
+
+      await _audioPlayer.stop();
+      await _audioPlayer.play(DeviceFileSource(filePath));
+      return true;
+    } catch (e) {
+      debugPrint('TTS play error: $e');
+      return false;
+    }
+  }
+
+  Future<void> _speakAssistantReply(String text) async {
+    final normalized = text.trim();
+    if (normalized.isEmpty) return;
+
+    try {
+      final bytes = await _chatController.fetchMessageTtsBytes(normalized);
+      if (bytes == null || bytes.isEmpty) {
+        debugPrint('Auto TTS: empty bytes for assistant reply');
+        return;
+      }
+
+      if (!mounted) return;
+
+      final ok = await _playTtsBytes(bytes);
+      if (!ok && mounted) {
+        debugPrint('Auto TTS: playback failed');
+      }
+    } catch (e, st) {
+      debugPrint('Auto TTS error: $e\n$st');
+    }
   }
 
   @override
   void dispose() {
     _inputController.dispose();
-    _ttsPlayer.dispose();
+    _audioPlayer.dispose();
     _audioRecorder.dispose();
     _recordingTimeoutTimer?.cancel();
     super.dispose();
@@ -204,10 +248,13 @@ class _ChatViewState extends State<ChatView> {
       final data = await _chatController.sendChat(_messages, initial: initial);
       final reply = data['reply'] as String? ?? '';
       final correctionsText = data['corrections_text'] as String? ?? '';
+      String? assistantReplyForTts;
 
       setState(() {
         if (reply.trim().isNotEmpty) {
-          _messages.add(ChatMessage(role: 'assistant', text: reply.trim()));
+          final normalized = reply.trim();
+          _messages.add(ChatMessage(role: 'assistant', text: normalized));
+          assistantReplyForTts = normalized;
         }
         if (correctionsText.trim().isNotEmpty) {
           _messages.add(
@@ -219,6 +266,10 @@ class _ChatViewState extends State<ChatView> {
           );
         }
       });
+
+      if (assistantReplyForTts != null) {
+        unawaited(_speakAssistantReply(assistantReplyForTts!));
+      }
     } catch (e) {
       setState(() {
         _messages.add(

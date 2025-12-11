@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:language_tutor_app/models/character.dart';
 import 'package:language_tutor_app/screens/chat/chat_screen.dart';
+import 'package:language_tutor_app/screens/home/learning_language_select_screen.dart';
 import 'package:language_tutor_app/services/character_service.dart';
 import 'package:language_tutor_app/ui/widgets/app_scaffold.dart';
 import 'package:language_tutor_app/widgets/looping_png_animation.dart';
@@ -34,6 +36,7 @@ class _CharacterConversationScreenState
     extends State<CharacterConversationScreen> {
   late final List<String> _characterFrames;
   bool _isPressing = false;
+  bool _isChatSheetOpen = false;
 
   CharacterLook get _characterLook =>
       characterLookFor(widget.partnerLanguage, widget.partnerGender);
@@ -42,6 +45,8 @@ class _CharacterConversationScreenState
   void initState() {
     super.initState();
     _characterFrames = buildCharacterFrames(widget.partnerLanguage);
+    // Автоматически открываем чат после появления экрана, чтобы сразу стартовал диалог.
+    SchedulerBinding.instance.addPostFrameCallback((_) => _openChatSheet());
   }
 
   @override
@@ -59,7 +64,14 @@ class _CharacterConversationScreenState
                 children: [
                   IconButton(
                     icon: const Icon(Icons.arrow_back),
-                    onPressed: () => Navigator.of(context).maybePop(),
+                    onPressed: () {
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(
+                          builder: (_) => const LearningLanguageSelectScreen(),
+                        ),
+                        (route) => false,
+                      );
+                    },
                   ),
                   Expanded(
                     child: Column(
@@ -87,28 +99,36 @@ class _CharacterConversationScreenState
                 ],
               ),
             ),
-            SizedBox(
-              height: size.height * 0.55,
+            Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Center(child: _buildCharacterStage(_characterLook)),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    SizedBox(
+                      height: size.height * 0.4,
+                      child: Center(child: _buildCharacterStage(_characterLook)),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Нажмите и удерживайте кнопку внизу, чтобы говорить',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(color: Colors.grey.shade700),
+                    ),
+                  ],
+                ),
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Text(
-                'Нажмите и удерживайте кнопку внизу, чтобы говорить',
-                textAlign: TextAlign.center,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.grey.shade700),
+              padding: const EdgeInsets.only(bottom: 16, top: 8),
+              child: _VoiceInputBar(
+                isPressing: _isPressing,
+                onPressChanged: (value) => setState(() => _isPressing = value),
+                accent: _characterLook.accentColor,
               ),
-            ),
-            _VoiceInputBar(
-              isPressing: _isPressing,
-              onPressChanged: (value) => setState(() => _isPressing = value),
-              accent: _characterLook.accentColor,
             ),
           ],
         ),
@@ -175,6 +195,9 @@ class _CharacterConversationScreenState
   }
 
   void _openChatSheet() {
+    if (_isChatSheetOpen) return;
+    setState(() => _isChatSheetOpen = true);
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -230,7 +253,11 @@ class _CharacterConversationScreenState
           },
         );
       },
-    );
+    ).whenComplete(() {
+      if (mounted) {
+        setState(() => _isChatSheetOpen = false);
+      }
+    });
   }
 }
 

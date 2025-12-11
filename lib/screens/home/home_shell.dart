@@ -1,10 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:language_tutor_app/screens/dialogs/dialogs_screen.dart';
+import 'package:language_tutor_app/models/lesson.dart';
+import 'package:language_tutor_app/screens/chat/character_conversation_screen.dart';
 import 'package:language_tutor_app/screens/home/learning_language_select_screen.dart';
+import 'package:language_tutor_app/screens/map/map_screen.dart';
+import 'package:language_tutor_app/services/api_service.dart';
+import 'package:language_tutor_app/services/character_service.dart';
 import 'package:language_tutor_app/ui/theme/app_theme.dart';
 import 'package:language_tutor_app/ui/widgets/app_scaffold.dart';
-import 'package:language_tutor_app/ui/widgets/gradient_card.dart';
 import 'package:language_tutor_app/ui/widgets/buttons.dart';
+import 'package:language_tutor_app/ui/widgets/gradient_card.dart';
+import 'package:language_tutor_app/screens/map/map_controller.dart';
+import 'package:language_tutor_app/screens/map/lesson_screen.dart';
+import 'dart:math' as math;
 
 class HomeShell extends StatefulWidget {
   final int userAge;
@@ -27,6 +34,7 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   late String _learningLanguage;
+  static const _defaultLevel = 'B2';
 
   @override
   void initState() {
@@ -41,13 +49,21 @@ class _HomeShellState extends State<HomeShell> {
       body: IndexedStack(
         index: _index,
         children: [
-          CharacterSelectScreen(
+          CharacterConversationScreen(
+            learningLanguage: _learningLanguage,
+            partnerLanguage: _learningLanguage,
+            level: _defaultLevel,
+            topic: 'General conversation',
+            userGender: widget.userGender,
+            userAge: widget.userAge,
+            partnerGender: 'male',
+          ),
+          MapTab(
+            learningLanguage: _learningLanguage,
+            userLevel: _defaultLevel,
             userAge: widget.userAge,
             userGender: widget.userGender,
-            learningLanguage: _learningLanguage,
-          ),
-          MapPlaceholderScreen(
-            onGoCharacters: () => setState(() => _index = 0),
+            userInterests: widget.userInterests,
           ),
           ProfileScreen(
             age: widget.userAge,
@@ -67,9 +83,9 @@ class _HomeShellState extends State<HomeShell> {
         onDestinationSelected: (value) => setState(() => _index = value),
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.diversity_3_outlined),
-            selectedIcon: Icon(Icons.diversity_3),
-            label: 'Персонажи',
+            icon: Icon(Icons.chat_bubble_outline),
+            selectedIcon: Icon(Icons.chat_bubble),
+            label: 'Диалог',
           ),
           NavigationDestination(
             icon: Icon(Icons.map_outlined),
@@ -101,67 +117,382 @@ class _HomeShellState extends State<HomeShell> {
       case 0:
       default:
         return AppBar(
-          title: const Text('Персонажи'),
+          title: const Text('Диалог'),
           centerTitle: true,
         );
     }
   }
 }
 
-class MapPlaceholderScreen extends StatelessWidget {
-  final VoidCallback onGoCharacters;
+class MapTab extends StatefulWidget {
+  final String learningLanguage;
+  final String userLevel;
+  final int userAge;
+  final String userGender;
+  final List<String> userInterests;
 
-  const MapPlaceholderScreen({super.key, required this.onGoCharacters});
+  const MapTab({
+    super.key,
+    required this.learningLanguage,
+    required this.userLevel,
+    required this.userAge,
+    required this.userGender,
+    required this.userInterests,
+  });
+
+  @override
+  State<MapTab> createState() => _MapTabState();
+}
+
+class _MapTabState extends State<MapTab> {
+  CoursePlan? _coursePlan;
+  bool _isLoading = false;
+  String? _courseError;
+  final Set<String> _completedLessons = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCoursePlan();
+  }
+
+  @override
+  void didUpdateWidget(covariant MapTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.learningLanguage != widget.learningLanguage) {
+      _coursePlan = null;
+      _completedLessons.clear();
+      _loadCoursePlan();
+    }
+  }
+
+  Future<void> _loadCoursePlan() async {
+    if (_isLoading || _coursePlan != null) return;
+    setState(() {
+      _isLoading = true;
+      _courseError = null;
+    });
+
+    try {
+      final gender =
+          widget.userGender == 'unspecified' ? null : widget.userGender;
+      final plan = await _retry<CoursePlan>(
+        2,
+        () => ApiService.generateCoursePlan(
+          language: widget.learningLanguage,
+          levelHint: widget.userLevel,
+          age: widget.userAge,
+          gender: gender,
+          interests: widget.userInterests,
+          goals:
+              'Improve ${widget.learningLanguage} through conversation and vocabulary.',
+        ),
+      );
+      setState(() {
+        _coursePlan = plan;
+      });
+    } catch (e) {
+      setState(() {
+        _courseError =
+            'Не удалось сформировать курс. Попробуйте ещё раз чуть позже.';
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: GradientCard(
-          padding: const EdgeInsets.all(20),
+    final theme = Theme.of(context);
+    final plan = _coursePlan;
+    final look = characterLookFor(
+      widget.learningLanguage,
+      widget.userGender == 'female' ? 'female' : 'male',
+    );
+
+    Widget buildLessonCards(List<MapLessonPoint> lessons) {
+      return ListView.separated(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: lessons.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 12),
+        itemBuilder: (context, index) {
+          final lessonPoint = lessons[index];
+          final lesson = lessonPoint.lesson;
+          final level = lessonPoint.level.levelIndex;
+          final completed =
+              _completedLessons.contains('${lessonPoint.level.title}-${lesson.title}');
+          return InkWell(
+            borderRadius: BorderRadius.circular(24),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => LessonScreen(
+                    language: plan?.language ?? widget.learningLanguage,
+                    level: widget.userLevel,
+                    lesson: lesson,
+                    grammarTopics: lesson.grammarTopics,
+                    vocabTopics: lesson.vocabTopics,
+                    userInterests: widget.userInterests,
+                    onComplete: (total, done) {
+                      setState(() {
+                        _completedLessons
+                            .add('${lessonPoint.level.title}-${lesson.title}');
+                      });
+                    },
+                  ),
+                ),
+              );
+            },
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    look.primaryColor.withOpacity(0.08),
+                    Colors.white,
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.06),
+                    blurRadius: 16,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: look.accentColor.withOpacity(0.16),
+                      shape: BoxShape.circle,
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      '${index + 1}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Урок ${index + 1} · Level $level',
+                          style: theme.textTheme.labelMedium
+                              ?.copyWith(color: Colors.grey.shade700),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          lesson.title,
+                          style: theme.textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          lesson.description,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    completed ? Icons.check_circle : Icons.chevron_right,
+                    color: completed ? Colors.green : Colors.grey.shade700,
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    }
+
+    if (plan == null) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  color: AppColors.colorPrimary.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.map_outlined,
-                  size: 32,
-                  color: AppColors.colorPrimary,
-                ),
-              ),
-              const SizedBox(height: 18),
               Text(
-                'Здесь будет ваша пиксельная карта курсов',
-                style: Theme.of(context).textTheme.titleMedium,
+                'Карта курсов',
+                style: theme.textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
-              const SizedBox(height: 10),
-              Text(
-                'Мы готовим приключенческую карту с уроками и квестами. '
-                'Пока можно двигаться по диалогам — прогресс сохранится.',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 24),
-              PrimaryButton(
-                label: 'Вернуться к персонажам',
-                expand: false,
-                onPressed: onGoCharacters,
-              ),
+              const SizedBox(height: 12),
+              if (_isLoading)
+                const Center(child: CircularProgressIndicator())
+              else ...[
+                GradientCard(
+                  padding: const EdgeInsets.all(18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Сформируйте курс на основе ваших целей и предпочтений.',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Мы подберём уроки и построим карту с персонажем.',
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(color: Colors.grey.shade700),
+                      ),
+                      const SizedBox(height: 16),
+                      PrimaryButton(
+                        label: 'Сформировать курс',
+                        expand: false,
+                        onPressed: _loadCoursePlan,
+                      ),
+                      if (_courseError != null) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          _courseError!,
+                          style: const TextStyle(color: Colors.redAccent),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
             ],
           ),
         ),
+      );
+    }
+
+    final List<MapLessonPoint> mapLessons = [];
+    for (final level in plan.levels) {
+      for (final lesson in level.lessons) {
+        mapLessons.add(MapLessonPoint(level: level, lesson: lesson));
+      }
+    }
+    final takeCount = math.min(mapLessons.length, lessonPositions.length);
+    final positionedLessons = <MapLessonPoint>[];
+    for (var i = 0; i < takeCount; i++) {
+      positionedLessons.add(
+        mapLessons[i].copyWithPosition(lessonPositions[i]),
+      );
+    }
+
+    return SafeArea(
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: IconButton(
+                tooltip: 'Уроки',
+                icon: const Icon(Icons.menu_book_outlined),
+                onPressed: () {
+                  showModalBottomSheet(
+                    context: context,
+                    isScrollControlled: true,
+                    backgroundColor: Colors.transparent,
+                    builder: (ctx) {
+                      return DraggableScrollableSheet(
+                        initialChildSize: 0.6,
+                        minChildSize: 0.4,
+                        maxChildSize: 0.95,
+                        builder: (context, scrollController) {
+                          return Container(
+                            decoration: const BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.only(
+                                topLeft: Radius.circular(24),
+                                topRight: Radius.circular(24),
+                              ),
+                            ),
+                            child: Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                              child: SingleChildScrollView(
+                                controller: scrollController,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Center(
+                                      child: Container(
+                                        width: 48,
+                                        height: 5,
+                                        decoration: BoxDecoration(
+                                          color: Colors.grey.shade400,
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      'Уроки курса',
+                                      style: theme.textTheme.titleMedium
+                                          ?.copyWith(
+                                              fontWeight: FontWeight.w700),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    buildLessonCards(
+                                        mapLessons.take(20).toList()),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+          Expanded(
+            child: MapScreen(
+              language: plan.language,
+              userLevel: widget.userLevel,
+              plan: plan,
+              look: look,
+              lessons: positionedLessons,
+              completedLessons: _completedLessons,
+              userInterests: widget.userInterests,
+              onLessonCompleted: (lessonKey) {
+                setState(() {
+                  _completedLessons.add(lessonKey);
+                });
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
-}
 
+  Future<T> _retry<T>(int times, Future<T> Function() action) async {
+    int attempt = 0;
+    while (true) {
+      attempt++;
+      try {
+        return await action();
+      } catch (e) {
+        if (attempt > times) rethrow;
+      }
+    }
+  }
+}
 class ProfileScreen extends StatelessWidget {
   final int age;
   final String gender;

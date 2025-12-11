@@ -77,13 +77,7 @@ class ChatController {
       withAudio: true,
     );
     final audio = data['audio_base64'] as String?;
-    if (audio == null || audio.isEmpty) return null;
-    try {
-      return base64Decode(audio);
-    } catch (e, st) {
-      debugPrint('TTS decode error: $e\n$st');
-      return null;
-    }
+    return _decodeAudio(audio);
   }
 
   Future<String> speechToText(File file) async {
@@ -122,6 +116,29 @@ class ChatController {
         return 'ru';
       default:
         return 'en';
+    }
+  }
+
+  Future<Uint8List?> fetchMessageTtsBytes(String text) async {
+    final normalized = text.trim();
+    if (normalized.isEmpty) return null;
+
+    final data = await ApiService.translateWord(
+      word: normalized,
+      language: language,
+      withAudio: true,
+    );
+    final audio = data['audio_base64'] as String?;
+    return _decodeAudio(audio);
+  }
+
+  Uint8List? _decodeAudio(String? audio) {
+    if (audio == null || audio.isEmpty) return null;
+    try {
+      return base64Decode(audio);
+    } catch (e, st) {
+      debugPrint('TTS decode error: $e\n$st');
+      return null;
     }
   }
 }
