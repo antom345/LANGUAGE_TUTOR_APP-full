@@ -15,9 +15,9 @@ import logging
 logger = logging.getLogger("language_tutor_backend")
 
 
-# ==================   PIPER TTS НАПРЯМУЮ В БЕКЕНДЕ   ==================
+# ==================   PIPER TTS НАПРЯМУЮ В БЭКЕНДЕ   ==================
 
-# Путь к моделям Piper
+# Путь к моделям Piper (проверь, что у тебя реально так!)
 PIPER_MODELS_DIR = "/workspace/langapp/piper_models"
 
 # Язык -> конкретный onnx-файл из твоей папки
@@ -41,26 +41,48 @@ LANG_TO_MODEL: Dict[str, str] = {
     "ko": os.path.join(PIPER_MODELS_DIR, "ko_KR-hajun-medium.onnx"),
 }
 
+# Алиасы языков, чтобы работало и с English/German, и с "английский"/"немецкий"
+LANG_ALIASES: Dict[str, list[str]] = {
+    "en": ["en", "en-us", "en-gb", "english", "английский", "англ"],
+    "de": ["de", "de-de", "deutsch", "german", "немецкий", "нем"],
+    "fr": ["fr", "fr-fr", "français", "french", "французский", "франц"],
+    "es": ["es", "es-es", "español", "spanish", "испанский", "исп"],
+    "it": ["it", "it-it", "italiano", "italian", "итальянский", "итал"],
+    "ko": ["ko", "ko-kr", "korean", "한국어", "корейский", "кор"],
+}
 
-# Какой бинарник Piper использовать.
-# Если команда "piper" не найдётся — укажи сюда полный путь, например:
-# PIPER_BIN = "/workspace/langapp/venv/bin/piper"
-PIPER_BIN = "piper"
+# Какой бинарник Piper использовать — настоящий путь на RunPod
+PIPER_BIN = "/workspace/langapp/piper_bin/piper/piper"
 
 
 def normalize_lang_code(language: str) -> str:
     """
-    Приводим код языка к виду "de", "en", "fr".
-    Поддерживает варианты "de-DE", "de_DE", "DE", "Deutsch" и т.п. —
-    берём первые 2 буквы.
+    Приводим произвольное название языка к коду "de", "en", "fr" и т.д.
+    Поддерживает варианты:
+    - en, en-US, english
+    - Deutsch, German, Немецкий
+    - Английский, Французский и т.п.
     """
+    if not language:
+        return "en"
+
     lang = language.strip().lower()
+
+    # Сначала пробуем по алиасам
+    for code, aliases in LANG_ALIASES.items():
+        if lang == code or lang in aliases:
+            return code
+
+    # Дальше — старый механизм: отрезаем регион
     for sep in ("-", "_"):
         if sep in lang:
             lang = lang.split(sep)[0]
             break
+
+    # И берём первые 2 буквы
     if len(lang) > 2:
         lang = lang[:2]
+
     return lang
 
 
@@ -73,7 +95,10 @@ def synthesize_with_piper(text: str, language: str) -> bytes:
 
     model_path = LANG_TO_MODEL.get(lang)
     if not model_path:
-        raise RuntimeError(f"Нет модели Piper для языка '{language}' (нормализованный код: '{lang}')")
+        raise RuntimeError(
+            f"Нет модели Piper для языка '{language}' "
+            f"(нормализованный код: '{lang}')"
+        )
 
     if not os.path.exists(model_path):
         raise RuntimeError(f"Файл модели Piper не найден: {model_path}")
@@ -81,12 +106,13 @@ def synthesize_with_piper(text: str, language: str) -> bytes:
     try:
         # Piper читает текст из stdin, отдаёт аудио в stdout
         process = subprocess.run(
-            [PIPER_BIN, "--model", model_path, "--output_raw"],
-            input=text.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-        )
+    [PIPER_BIN, "--model", model_path, "--output_file", "-"],
+    input=text.encode("utf-8"),
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    check=True,
+)
+
     except FileNotFoundError:
         raise RuntimeError(
             "Команда 'piper' не найдена. "
@@ -94,11 +120,15 @@ def synthesize_with_piper(text: str, language: str) -> bytes:
             "или пропиши полный путь к бинарнику в переменной PIPER_BIN."
         )
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Piper завершился с ошибкой: {e.stderr.decode('utf-8', errors='ignore')}")
+        raise RuntimeError(
+            f"Piper завершился с ошибкой: "
+            f"{e.stderr.decode('utf-8', errors='ignore')}"
+        )
 
     return process.stdout
 
 # ==================   КОНЕЦ БЛОКА PIPER   ==================
+
 
 
 try:
@@ -342,7 +372,7 @@ class TranslateResponse(BaseModel):
     translation: str
     example: str
     example_translation: str
-    # base64-encoded audio (mp3) for the word pronunciation
+    # base64-encoded audio (PCM/raw) for the word pronunciation
     audio_base64: Optional[str] = None
 
 
@@ -693,10 +723,10 @@ def call_llm_translate(
 ) -> TranslateResponse:
     """
     Перевод одного слова/фразы на русский + пример и перевод примера.
-    Озвучка слова через новый TTS сервис.
+    Озвучка слова через Piper (если include_audio = True).
     """
 
-    # ---------- 1. Получаем перевод и пример через новую LLM ----------
+    # ---------- 1. Получаем перевод и пример через LLM ----------
     system_prompt = f"""
 You are a translator.
 Your task: translate ONE word or a very short phrase from {language} to Russian
@@ -733,15 +763,19 @@ Answer STRICTLY as JSON, without any extra text:
         example = ""
         example_translation = ""
 
+    # Подстраховка, чтобы не возвращать пустые строки
     if not translation:
         translation = word
+
+    if not example:
+        example = word
 
     if not example_translation:
         example_translation = "перевод примера не указан"
 
-    # ---- Генерация озвучки через новый TTS ----
-    # ---- Генерация озвучки через Piper ----
+    # ---------- 2. Озвучка через Piper ----------
     audio_b64: Optional[str] = None
+
     if include_audio:
         try:
             text = (word or "").strip()
@@ -752,9 +786,6 @@ Answer STRICTLY as JSON, without any extra text:
         except Exception as e:
             print("TTS ERROR (Piper):", e)
             audio_b64 = None
-
-
-
 
     return TranslateResponse(
         translation=translation,
@@ -816,9 +847,6 @@ async def chat_endpoint(payload: dict = Body(...)):
     response = call_llm_chat(req)
     return response
 
-
-
-
 @app.post("/translate-word", response_model=TranslateResponse)
 async def translate_word_endpoint(payload: TranslateRequest):
     lang = payload.language or "English"
@@ -827,11 +855,6 @@ async def translate_word_endpoint(payload: TranslateRequest):
         payload.word,
         include_audio=bool(payload.with_audio),
     )
-
-
-
-
-
 
 @app.post("/generate_course_plan", response_model=CoursePlan)
 def generate_course_plan(prefs: CoursePreferences):
@@ -969,7 +992,6 @@ def generate_lesson(req: LessonRequest):
     data["exercises"] = fixed_exercises
 
     return LessonContent(**data)
-
 
 
 # ---------- Локальный запуск ----------
