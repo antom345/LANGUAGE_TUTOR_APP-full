@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:language_tutor_app/screens/dialogs/dialogs_screen.dart';
+import 'package:language_tutor_app/screens/home/learning_language_select_screen.dart';
 import 'package:language_tutor_app/ui/theme/app_theme.dart';
 import 'package:language_tutor_app/ui/widgets/app_scaffold.dart';
 import 'package:language_tutor_app/ui/widgets/gradient_card.dart';
@@ -9,12 +10,14 @@ class HomeShell extends StatefulWidget {
   final int userAge;
   final String userGender;
   final List<String> userInterests;
+  final String learningLanguage;
 
   const HomeShell({
     super.key,
     required this.userAge,
     required this.userGender,
     this.userInterests = const [],
+    required this.learningLanguage,
   });
 
   @override
@@ -23,6 +26,13 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  late String _learningLanguage;
+
+  @override
+  void initState() {
+    super.initState();
+    _learningLanguage = widget.learningLanguage;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,17 +41,24 @@ class _HomeShellState extends State<HomeShell> {
       body: IndexedStack(
         index: _index,
         children: [
-          DialogsScreen(
+          CharacterSelectScreen(
             userAge: widget.userAge,
             userGender: widget.userGender,
+            learningLanguage: _learningLanguage,
           ),
           MapPlaceholderScreen(
-            onGoDialogs: () => setState(() => _index = 0),
+            onGoCharacters: () => setState(() => _index = 0),
           ),
           ProfileScreen(
             age: widget.userAge,
             gender: widget.userGender,
             interests: widget.userInterests,
+            learningLanguage: _learningLanguage,
+            onChangeLanguage: (lang) {
+              setState(() {
+                _learningLanguage = lang;
+              });
+            },
           ),
         ],
       ),
@@ -50,9 +67,9 @@ class _HomeShellState extends State<HomeShell> {
         onDestinationSelected: (value) => setState(() => _index = value),
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble),
-            label: 'Диалоги',
+            icon: Icon(Icons.diversity_3_outlined),
+            selectedIcon: Icon(Icons.diversity_3),
+            label: 'Персонажи',
           ),
           NavigationDestination(
             icon: Icon(Icons.map_outlined),
@@ -84,7 +101,7 @@ class _HomeShellState extends State<HomeShell> {
       case 0:
       default:
         return AppBar(
-          title: const Text('Диалоги'),
+          title: const Text('Персонажи'),
           centerTitle: true,
         );
     }
@@ -92,9 +109,9 @@ class _HomeShellState extends State<HomeShell> {
 }
 
 class MapPlaceholderScreen extends StatelessWidget {
-  final VoidCallback onGoDialogs;
+  final VoidCallback onGoCharacters;
 
-  const MapPlaceholderScreen({super.key, required this.onGoDialogs});
+  const MapPlaceholderScreen({super.key, required this.onGoCharacters});
 
   @override
   Widget build(BuildContext context) {
@@ -133,9 +150,9 @@ class MapPlaceholderScreen extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               PrimaryButton(
-                label: 'Продолжить диалоги',
+                label: 'Вернуться к персонажам',
                 expand: false,
-                onPressed: onGoDialogs,
+                onPressed: onGoCharacters,
               ),
             ],
           ),
@@ -149,12 +166,16 @@ class ProfileScreen extends StatelessWidget {
   final int age;
   final String gender;
   final List<String> interests;
+  final String learningLanguage;
+  final ValueChanged<String> onChangeLanguage;
 
   const ProfileScreen({
     super.key,
     required this.age,
     required this.gender,
     required this.interests,
+    required this.learningLanguage,
+    required this.onChangeLanguage,
   });
 
   @override
@@ -197,6 +218,11 @@ class ProfileScreen extends StatelessWidget {
                             'Возраст: $age · Пол: $gender',
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Изучаемый язык: $learningLanguage',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
                         ],
                       ),
                     ],
@@ -228,13 +254,37 @@ class ProfileScreen extends StatelessWidget {
                   Row(
                     children: [
                       Expanded(
+                        child: SecondaryButton(
+                          label: 'Изменить язык',
+                          expand: true,
+                          onPressed: () async {
+                            final lang = await Navigator.of(context).push(
+                              MaterialPageRoute<String>(
+                                builder: (_) => LearningLanguageSelectScreen(
+                                  initialLanguage: learningLanguage,
+                                  returnSelectionOnly: true,
+                                ),
+                              ),
+                            );
+                            if (lang is String && lang.isNotEmpty) {
+                              onChangeLanguage(lang);
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
                         child: PrimaryButton(
                           label: 'Изменить цель',
                           expand: true,
                           onPressed: () => _showStub(context),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
                       Expanded(
                         child: SecondaryButton(
                           label: 'Выйти',

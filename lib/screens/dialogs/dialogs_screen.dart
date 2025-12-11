@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:language_tutor_app/models/character.dart';
-import 'package:language_tutor_app/screens/chat/chat_screen.dart';
+import 'package:language_tutor_app/screens/chat/character_conversation_screen.dart';
 import 'package:language_tutor_app/screens/home/home_screen.dart';
 import 'package:language_tutor_app/services/character_service.dart';
 import 'package:language_tutor_app/ui/widgets/gradient_card.dart';
@@ -9,21 +9,23 @@ import 'package:language_tutor_app/ui/widgets/language_chip.dart';
 import 'package:language_tutor_app/utils/helpers.dart';
 import 'package:language_tutor_app/widgets/character_avatar.dart';
 
-class DialogsScreen extends StatefulWidget {
+class CharacterSelectScreen extends StatefulWidget {
   final int userAge;
   final String userGender;
+  final String learningLanguage;
 
-  const DialogsScreen({
+  const CharacterSelectScreen({
     super.key,
     required this.userAge,
     required this.userGender,
+    required this.learningLanguage,
   });
 
   @override
-  State<DialogsScreen> createState() => _DialogsScreenState();
+  State<CharacterSelectScreen> createState() => _CharacterSelectScreenState();
 }
 
-class _DialogsScreenState extends State<DialogsScreen> {
+class _CharacterSelectScreenState extends State<CharacterSelectScreen> {
   final List<Map<String, Object>> _chats = [
     {
       'name': 'Michael',
@@ -68,60 +70,29 @@ class _DialogsScreenState extends State<DialogsScreen> {
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final mobile = isMobileLayout(constraints);
-
-            if (mobile) {
-              return _DialogsList(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Персонажи',
+              style: Theme.of(context)
+                  .textTheme
+                  .headlineSmall
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Выберите персонажа, чтобы начать разговор',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 16),
+            Expanded(
+              child: _CharacterList(
                 chats: _chats,
                 onOpen: _openChat,
-              );
-            }
-
-            return Row(
-              children: [
-                SizedBox(
-                  width: 320,
-                  child: _DialogsList(
-                    chats: _chats,
-                    onOpen: _openChat,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: GradientCard(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.chat_bubble_outline,
-                          size: 56,
-                          color: Colors.grey.shade500,
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          'Выберите чат слева',
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleMedium
-                              ?.copyWith(color: Colors.grey.shade700),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'На мобильных устройствах экран диалога откроется сразу.',
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -129,19 +100,21 @@ class _DialogsScreenState extends State<DialogsScreen> {
 
   Future<void> _openChat(
     BuildContext context,
-    String language,
+    String characterLanguage,
     String partnerGender,
   ) async {
     final level = await _pickLevel(context);
     if (level == null || !mounted) return;
 
-    final chosenLevel = await _offerPlacementChoice(context, language, level);
+    final chosenLevel =
+        await _offerPlacementChoice(context, widget.learningLanguage, level);
     if (!mounted) return;
 
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ChatScreen(
-          language: language,
+        builder: (_) => CharacterConversationScreen(
+          learningLanguage: widget.learningLanguage,
+          partnerLanguage: characterLanguage,
           level: chosenLevel,
           topic: 'General conversation',
           userGender: widget.userGender,
@@ -276,11 +249,11 @@ class _DialogsScreenState extends State<DialogsScreen> {
   }
 }
 
-class _DialogsList extends StatelessWidget {
+class _CharacterList extends StatelessWidget {
   final List<Map<String, Object>> chats;
   final Future<void> Function(BuildContext, String, String) onOpen;
 
-  const _DialogsList({
+  const _CharacterList({
     required this.chats,
     required this.onOpen,
   });
@@ -303,7 +276,7 @@ class _DialogsList extends StatelessWidget {
           name: name,
           language: lang,
           code: code,
-          hint: 'Нажмите, чтобы начать диалог',
+          hint: 'Нажмите, чтобы начать диалог с персонажем',
           accent: accent,
           onTap: () => onOpen(context, lang, partnerGender),
           leading: Stack(

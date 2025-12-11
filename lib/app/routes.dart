@@ -20,10 +20,12 @@ final Map<String, WidgetBuilder> appRoutes = {
     );
   },
   '/chat': (context) {
-    final args = ModalRoute.of(context)?.settings.arguments as ChatScreenArgs?;
+    final args =
+        ModalRoute.of(context)?.settings.arguments as ChatHistoryScreenArgs?;
     if (args == null) return const HomeScreen();
-    return ChatScreen(
-      language: args.language,
+    return ChatHistoryScreen(
+      learningLanguage: args.learningLanguage,
+      partnerLanguage: args.partnerLanguage,
       level: args.level,
       topic: args.topic,
       userGender: args.userGender,
