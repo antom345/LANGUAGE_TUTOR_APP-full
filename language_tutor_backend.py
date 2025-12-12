@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
@@ -13,6 +13,7 @@ import subprocess  # для запуска piper через команду
 import logging
 import tempfile
 import shlex
+import tempfile  # для временного файла в /stt
 
 logger = logging.getLogger("language_tutor_backend")
 
@@ -105,7 +106,7 @@ def normalize_lang_code(language: str) -> str:
 
 def synthesize_with_piper(text: str, language: str) -> bytes:
     """
-    Озвучка текста через Piper. Возвращает сырые аудиобайты (WAV/PCM),
+    Озвучка текста через Piper. Возвращает сырые аудиобайты (PCM),
     которые мы потом кодируем в base64 и отдаём фронту.
     """
     lang = normalize_lang_code(language)
@@ -120,38 +121,28 @@ def synthesize_with_piper(text: str, language: str) -> bytes:
     if not os.path.exists(model_path):
         raise RuntimeError(f"Файл модели Piper не найден: {model_path}")
 
-    # Гарантируем, что Piper видит свои .so и espeak-ng-data
-    env = os.environ.copy()
-    piper_lib_dir = "/workspace/langapp/piper/piper"
-    espeak_data_dir = "/workspace/langapp/piper/piper/espeak-ng-data"
-
-    env["LD_LIBRARY_PATH"] = f"{piper_lib_dir}:" + env.get("LD_LIBRARY_PATH", "")
-    env["ESPEAK_DATA"] = espeak_data_dir
-    env["ESPEAKNG_DATA"] = espeak_data_dir
-
     try:
-        # Piper читает текст из stdin, отдаёт WAV в stdout
+        # Piper читает текст из stdin, отдаёт аудио в stdout
         process = subprocess.run(
             [
-                PIPER_BIN,
-                "--model", model_path,
-                "--espeak-data", espeak_data_dir,
-                "--output_file", "-",
+            PIPER_BIN,
+            "--model", model_path,
+            "--espeak-data", "/workspace/langapp/piper/piper/espeak-ng-data",
+             "--output_file", "-",
             ],
             input=text.encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True,
-            env=env,
         )
     except FileNotFoundError:
         raise RuntimeError(
-            "Команда Piper не найдена. "
-            "Проверь, что PIPER_BIN указывает на правильный бинарник."
+            "Бинарник Piper не найден. "
+            f"Проверь, что файл существует и исполняемый: {PIPER_BIN}"
         )
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
-            f"Piper завершился с ошибкой: "
+            "Piper завершился с ошибкой: "
             f"{e.stderr.decode('utf-8', errors='ignore')}"
         )
 
@@ -160,7 +151,10 @@ def synthesize_with_piper(text: str, language: str) -> bytes:
 
 # ==================   КОНЕЦ БЛОКА PIPER   ==================
 
+# ------------------ LOCAL WHISPER STT (whisper.cpp) ------------------
 
+WHISPER_BIN = "/workspace/langapp/whisper.cpp/build/bin/whisper-cli"
+WHISPER_MODEL = "/workspace/langapp/whisper.cpp/models/ggml-base.bin"
 
 try:
     # Используем OpenAI только для STT, если он установлен и настроен
@@ -386,6 +380,8 @@ class ChatResponse(BaseModel):
     reply: str
     corrections_text: str
     partner_name: str
+    audio_base64: Optional[str] = None
+
 
 class STTResponse(BaseModel):
     text: str          # распознанный текст
@@ -732,7 +728,7 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
         # если модель вдруг ответила не JSON
         reply_text = (content or "").strip()
 
-    # Если ученик ещё ни разу не писал (только первое приветствие Эмили) —
+    # Если ученик ещё ни разу не писал (только первое приветствие) —
     # не показываем никаких исправлений
     if not has_user_message:
         corrections_text = ""
@@ -740,11 +736,26 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
     if not reply_text:
         reply_text = "Sorry, something went wrong. Could you write that again?"
 
+    # ---------- Озвучка ответа через Piper ----------
+    audio_b64: Optional[str] = None
+    try:
+        text_for_tts = reply_text.strip()
+        if text_for_tts:
+            logger.info(
+                f"[TTS] Piper for chat reply, language={req.language!r}, text={text_for_tts!r}"
+            )
+            audio_bytes = synthesize_with_piper(text_for_tts, req.language)
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+    except Exception as e:
+        logger.error(f"TTS ERROR (Piper chat): {e}", exc_info=True)
+
     return ChatResponse(
         reply=reply_text,
         corrections_text=corrections_text,
         partner_name=partner_name,
+        audio_base64=audio_b64,
     )
+
 
 
 def call_llm_translate(
@@ -834,6 +845,68 @@ Answer STRICTLY as JSON, without any extra text:
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+@app.post("/stt", response_model=STTResponse)
+async def stt_endpoint(
+    language_code: str = Query("en", alias="language_code"),
+    file: UploadFile = File(...),
+):
+    """
+    Speech-to-text через локальный whisper.cpp.
+
+    Фронт шлёт:
+      POST /stt?language_code=xx
+      multipart/form-data с полем 'file' (аудиофайл .wav / .m4a / .webm и т.п.)
+
+    Возвращаем:
+      {"text": "...", "language": "xx"}
+    """
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    orig_name = file.filename or ""
+    _, ext = os.path.splitext(orig_name)
+    if not ext:
+        ext = ".wav"
+
+    try:
+        # сохраняем во временный файл
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=True) as tmp:
+            tmp.write(contents)
+            tmp.flush()
+
+            cmd = [
+                WHISPER_BIN,
+                "-m", WHISPER_MODEL,
+                "-f", tmp.name,
+                "-l", language_code,
+            ]
+
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+            )
+
+            if proc.returncode != 0:
+                logging.error(
+                    f"Whisper STT error (code {proc.returncode}): {proc.stderr}"
+                )
+                raise HTTPException(status_code=500, detail="Whisper STT failed")
+
+            text = proc.stdout.strip()
+
+            return STTResponse(
+                text=text,
+                language=language_code,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Whisper STT exception")
+        raise HTTPException(status_code=500, detail=f"STT internal error: {e}")
 
 
 @app.get("/topics")
