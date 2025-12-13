@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 import os
@@ -56,6 +57,7 @@ LANG_ALIASES: Dict[str, list[str]] = {
 
 # Какой бинарник Piper использовать — настоящий путь на RunPod
 PIPER_BIN = "/workspace/langapp/piper/piper_bin"
+ESPEAK_DATA = "/workspace/langapp/piper/piper/espeak-ng-data"
 
 
 def _piper_env() -> Dict[str, str]:
@@ -104,14 +106,23 @@ def normalize_lang_code(language: str) -> str:
     return lang
 
 
-def synthesize_with_piper(text: str, language: str) -> bytes:
+def synthesize_with_piper(text: str, language: str, voice: Optional[str] = None) -> bytes:
     """
     Озвучка текста через Piper. Возвращает сырые аудиобайты (PCM),
     которые мы потом кодируем в base64 и отдаём фронту.
     """
     lang = normalize_lang_code(language)
 
-    model_path = LANG_TO_MODEL.get(lang)
+    model_path = None
+    if voice:
+        if os.path.isfile(voice):
+            model_path = voice
+        else:
+            voice_code = normalize_lang_code(voice)
+            model_path = LANG_TO_MODEL.get(voice) or LANG_TO_MODEL.get(voice_code)
+
+    if not model_path:
+        model_path = LANG_TO_MODEL.get(lang)
     if not model_path:
         raise RuntimeError(
             f"Нет модели Piper для языка '{language}' "
@@ -125,15 +136,20 @@ def synthesize_with_piper(text: str, language: str) -> bytes:
         # Piper читает текст из stdin, отдаёт аудио в stdout
         process = subprocess.run(
             [
-            PIPER_BIN,
-            "--model", model_path,
-            "--espeak-data", "/workspace/langapp/piper/piper/espeak-ng-data",
-             "--output_file", "-",
+                PIPER_BIN,
+                "--model",
+                model_path,
+                "--espeak-data",
+                ESPEAK_DATA,
+                "--output_file",
+                "-",
             ],
             input=text.encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True,
+            env=_piper_env(),
+            timeout=45,
         )
     except FileNotFoundError:
         raise RuntimeError(
@@ -145,6 +161,8 @@ def synthesize_with_piper(text: str, language: str) -> bytes:
             "Piper завершился с ошибкой: "
             f"{e.stderr.decode('utf-8', errors='ignore')}"
         )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Piper synthesis timed out")
 
     return process.stdout
 
@@ -172,13 +190,13 @@ TTS_BASE_URL = os.getenv("TTS_BASE_URL", "http://127.0.0.1:5001").rstrip("/")
 LLM_TYPE = os.getenv("LLM_TYPE", "ollama")
 
 # адрес ollama внутри сервера
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+LLM_BASE_URL = "http://127.0.0.1:11434"
 
 # имя модели в ollama
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3")
+LLM_MODEL="llama3.1:8b"
 
 # новый URL для ollama 0.3+ (НЕ /v1/chat/completions!)
-LLM_CHAT_COMPLETIONS_URL = f"{LLM_BASE_URL}/api/chat"
+LLM_CHAT_COMPLETIONS_URL = LLM_BASE_URL + "/api/chat"
 
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
@@ -383,6 +401,12 @@ class ChatResponse(BaseModel):
     audio_base64: Optional[str] = None
 
 
+class TTSRequest(BaseModel):
+    text: str
+    language: Optional[str] = "en"
+    voice: Optional[str] = None  # опциональный выбор конкретной модели
+
+
 class STTResponse(BaseModel):
     text: str          # распознанный текст
     language: str      # язык, который мы ожидали
@@ -549,21 +573,33 @@ def llm_chat_completion(
         headers = _llm_headers()
         logger.debug("[LLM] POST %s payload=%s", LLM_CHAT_COMPLETIONS_URL, payload)
 
+        logger.info("[LLM] POST %s", LLM_CHAT_COMPLETIONS_URL)
+        logger.warning("[LLM DEBUG] LLM_BASE_URL=%s", LLM_BASE_URL)
+        logger.warning("[LLM DEBUG] chat_url=%s", LLM_CHAT_COMPLETIONS_URL)
+        
+
         resp = httpx.post(
+            
             LLM_CHAT_COMPLETIONS_URL,      # http://127.0.0.1:11434/api/chat
             headers=headers,
             json=payload,
             timeout=LLM_TIMEOUT,
+            trust_env=False,               # ВАЖНО: игнорируем proxy из окружения
         )
-        resp.raise_for_status()
 
+        # Если вдруг /api/chat отдаёт 404 (как у тебя в логах) — пробуем /api/generate
+
+
+        resp.raise_for_status()
         data = resp.json()
-        logger.debug("[LLM] raw response: %s", data)
+
 
         # формат ответа ollama:
         # {"message": {"role": "assistant", "content": "..."} , ...}
-        message = data.get("message") or {}
-        content = message.get("content", "")
+        # /api/chat -> {"message":{"content":"..."}}
+        # /api/generate -> {"response":"..."}
+        content = ((data.get("message") or {}).get("content")) or data.get("response") or ""
+
 
         if not isinstance(content, str):
             content = str(content)
@@ -736,24 +772,11 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
     if not reply_text:
         reply_text = "Sorry, something went wrong. Could you write that again?"
 
-    # ---------- Озвучка ответа через Piper ----------
-    audio_b64: Optional[str] = None
-    try:
-        text_for_tts = reply_text.strip()
-        if text_for_tts:
-            logger.info(
-                f"[TTS] Piper for chat reply, language={req.language!r}, text={text_for_tts!r}"
-            )
-            audio_bytes = synthesize_with_piper(text_for_tts, req.language)
-            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-    except Exception as e:
-        logger.error(f"TTS ERROR (Piper chat): {e}", exc_info=True)
-
     return ChatResponse(
         reply=reply_text,
         corrections_text=corrections_text,
         partner_name=partner_name,
-        audio_base64=audio_b64,
+        audio_base64=None,
     )
 
 
@@ -925,31 +948,72 @@ async def chat_endpoint(payload: dict = Body(...)):
     2) Старый (Flutter): { language, student_message, level, words_learned }
     """
 
-    # Новый формат — уже есть поле messages
     if "messages" in payload:
         req = ChatRequest(**payload)
 
-    # Старый формат — одно поле student_message
-    elif "student_message" in payload:
-        legacy = LegacyChatRequest(**payload)
+    elif "message" in payload:
+        student_text = payload.get("message", "")
+        if not student_text:
+            raise HTTPException(status_code=422, detail="Empty 'message'")
+
         req = ChatRequest(
-            language=legacy.language,
-            level=legacy.level or "B1",
-            messages=[
-                ChatMessage(role="user", content=legacy.student_message)
-            ],
+            messages=[ChatMessage(role="user", content=student_text)],
+            language=payload.get("language", "English"),
+            level=payload.get("level", "B1"),
+            character=payload.get("character", "Michael"),
+            topic=payload.get("topic", "general"),
         )
 
-    # Непонятный формат
+    elif "student_message" in payload:
+        legacy = LegacyChatRequest(**payload)
+        student_text = legacy.student_message
+        if not student_text:
+            raise HTTPException(status_code=422, detail="Empty 'student_message'")
+
+        req = ChatRequest(
+            messages=[ChatMessage(role="user", content=student_text)],
+            language=legacy.language,
+            level=getattr(legacy, "level", None) or "B1",
+            character=getattr(legacy, "character", None) or "Michael",
+            topic="general",
+        )
+
     else:
         raise HTTPException(
             status_code=422,
-            detail="Unsupported request format: need either 'messages' or 'student_message'",
+            detail="Unsupported request format: need 'messages' or 'message' or 'student_message'",
         )
+
 
     # НОВЫЙ ВЫЗОВ
     response = call_llm_chat(req)
     return response
+
+
+@app.post("/tts")
+async def tts_endpoint(req: TTSRequest):
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required for TTS")
+
+    try:
+        logger.info(
+            "[TTS] Piper synthesis language=%s voice=%s text=%r",
+            req.language,
+            req.voice,
+            text,
+        )
+        audio = synthesize_with_piper(text, req.language or "en", voice=req.voice)
+        headers = {
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'inline; filename="tts.wav"',
+        }
+        return Response(content=audio, media_type="audio/wav", headers=headers)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[TTS] Piper failed: %s", e)
+        raise HTTPException(status_code=500, detail="TTS synthesis failed")
 
 @app.post("/translate-word", response_model=TranslateResponse)
 async def translate_word_endpoint(payload: TranslateRequest):
