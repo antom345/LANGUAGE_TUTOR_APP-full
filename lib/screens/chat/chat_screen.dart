@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -15,6 +16,36 @@ import 'package:language_tutor_app/ui/theme/app_theme.dart';
 import 'package:language_tutor_app/ui/widgets/app_scaffold.dart';
 import 'package:language_tutor_app/widgets/character_avatar.dart';
 import 'package:language_tutor_app/services/character_service.dart';
+
+class ChatViewController {
+  _ChatViewState? _state;
+  VoidCallback? onAttached;
+
+  bool get isReady => _state != null;
+
+  Future<void> startRecording() async {
+    await _state?._startRecording();
+  }
+
+  Future<void> stopRecordingAndSend({bool autoStop = false}) async {
+    await _state?._stopRecordingAndSend(autoStop: autoStop);
+  }
+
+  Future<void> cancelRecording() async {
+    await _state?._cancelRecording();
+  }
+
+  void _attach(_ChatViewState state) {
+    _state = state;
+    onAttached?.call();
+  }
+
+  void _detach(_ChatViewState state) {
+    if (_state == state) {
+      _state = null;
+    }
+  }
+}
 
 class ChatHistoryScreenArgs {
   final String learningLanguage;
@@ -113,6 +144,7 @@ class ChatView extends StatefulWidget {
   final String partnerGender;
   final ScrollController? scrollController;
   final bool showHeader;
+  final ChatViewController? controller;
 
   const ChatView({
     super.key,
@@ -125,6 +157,7 @@ class ChatView extends StatefulWidget {
     required this.partnerGender,
     this.scrollController,
     this.showHeader = true,
+    this.controller,
   });
 
   @override
@@ -137,6 +170,9 @@ class _ChatViewState extends State<ChatView> {
   bool _isSending = false;
   final List<SavedWord> _savedWords = [];
   final AudioPlayer _audioPlayer = AudioPlayer();
+  final Queue<Uint8List> _ttsQueue = Queue<Uint8List>();
+  bool _isTtsPlaying = false;
+  StreamSubscription<void>? _playerCompleteSub;
 
   final AudioRecorder _audioRecorder = AudioRecorder();
   bool _isRecording = false;
@@ -155,6 +191,7 @@ class _ChatViewState extends State<ChatView> {
   @override
   void initState() {
     super.initState();
+    widget.controller?._attach(this);
     _chatController = ChatController(
       language: widget.learningLanguage,
       level: widget.level,
@@ -163,6 +200,8 @@ class _ChatViewState extends State<ChatView> {
       userAge: widget.userAge,
       partnerGender: widget.partnerGender,
     );
+    _playerCompleteSub =
+        _audioPlayer.onPlayerComplete.listen((_) => _handlePlaybackComplete());
     _startConversation();
   }
 
@@ -192,6 +231,32 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  void _enqueueTts(Uint8List bytes) {
+    if (bytes.isEmpty) return;
+    _ttsQueue.add(bytes);
+    if (!_isTtsPlaying) {
+      unawaited(_playNextQueued());
+    }
+  }
+
+  Future<void> _playNextQueued() async {
+    if (_isTtsPlaying || _ttsQueue.isEmpty) return;
+    final next = _ttsQueue.removeFirst();
+    _isTtsPlaying = true;
+    final ok = await _playTtsBytes(next);
+    if (!ok) {
+      _isTtsPlaying = false;
+      await _playNextQueued();
+    }
+  }
+
+  void _handlePlaybackComplete() {
+    _isTtsPlaying = false;
+    if (_ttsQueue.isNotEmpty) {
+      unawaited(_playNextQueued());
+    }
+  }
+
   Future<void> _speakAssistantReply(String text) async {
     final normalized = text.trim();
     if (normalized.isEmpty) return;
@@ -204,11 +269,7 @@ class _ChatViewState extends State<ChatView> {
       }
 
       if (!mounted) return;
-
-      final ok = await _playTtsBytes(bytes);
-      if (!ok && mounted) {
-        debugPrint('Auto TTS: playback failed');
-      }
+      _enqueueTts(bytes);
     } catch (e, st) {
       debugPrint('Auto TTS error: $e\n$st');
     }
@@ -216,7 +277,9 @@ class _ChatViewState extends State<ChatView> {
 
   @override
   void dispose() {
+    widget.controller?._detach(this);
     _inputController.dispose();
+    _playerCompleteSub?.cancel();
     _audioPlayer.dispose();
     _audioRecorder.dispose();
     _recordingTimeoutTimer?.cancel();
@@ -234,6 +297,17 @@ class _ChatViewState extends State<ChatView> {
     setState(() {
       _messages.add(ChatMessage(role: 'user', text: text));
       _inputController.clear();
+    });
+
+    await _sendToBackend(initial: false);
+  }
+
+  Future<void> _sendRecognizedMessage(String text) async {
+    final normalized = text.trim();
+    if (normalized.isEmpty || _isSending) return;
+
+    setState(() {
+      _messages.add(ChatMessage(role: 'user', text: normalized));
     });
 
     await _sendToBackend(initial: false);
@@ -379,12 +453,34 @@ class _ChatViewState extends State<ChatView> {
     try {
       final recognized = await _chatController.speechToText(file);
       if (!mounted) return;
-      setState(() {
-        _inputController.text = recognized;
-      });
+
+      final cleaned = _cleanRecognizedText(recognized);
+      if (cleaned.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Не удалось распознать речь')),
+          );
+        }
+        return;
+      }
+
+      // Автоматически отправляем распознанное сообщение.
+      if (_isSending) {
+        // Если что-то уже отправляется, просто покажем текст в поле ввода.
+        _inputController.text = cleaned;
+      } else {
+        await _sendRecognizedMessage(cleaned);
+      }
     } catch (e) {
       debugPrint('STT exception: $e');
     }
+  }
+
+  String _cleanRecognizedText(String raw) {
+    var text = raw.trim();
+    // Убираем ведущие таймстампы вида [00:00:00.000 --> 00:00:03.440]
+    text = text.replaceFirst(RegExp(r'^\\s*\\[[^\\]]*\\]\\s*'), '');
+    return text.trim();
   }
 
   bool _isWordSaved(String word) {
@@ -509,14 +605,7 @@ class _ChatViewState extends State<ChatView> {
                         });
                       }
 
-                      final ok = await _playTtsBytes(audioBytes!);
-                      if (!ok && mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Не удалось воспроизвести аудио'),
-                          ),
-                        );
-                      }
+                      _enqueueTts(audioBytes!);
                     },
                   ),
                   IconButton(

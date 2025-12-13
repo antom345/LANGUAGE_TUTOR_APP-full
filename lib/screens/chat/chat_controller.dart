@@ -123,13 +123,15 @@ class ChatController {
     final normalized = text.trim();
     if (normalized.isEmpty) return null;
 
-    final data = await ApiService.translateWord(
-      word: normalized,
-      language: language,
-      withAudio: true,
-    );
-    final audio = data['audio_base64'] as String?;
-    return _decodeAudio(audio);
+    try {
+      return await ApiService.synthesizeTts(
+        text: normalized,
+        language: language,
+      );
+    } catch (e, st) {
+      debugPrint('Message TTS error: $e\n$st');
+      return null;
+    }
   }
 
   Uint8List? _decodeAudio(String? audio) {

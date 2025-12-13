@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -154,5 +155,37 @@ class ApiService {
       label: 'Lesson',
     );
     return LessonContentModel.fromJson(data);
+  }
+
+  static Future<Uint8List> synthesizeTts({
+    required String text,
+    required String language,
+    String? voice,
+  }) async {
+    final uri = Uri.parse('$kApiBaseUrl/tts');
+    http.Response resp;
+    try {
+      resp = await http.post(
+        uri,
+        headers: _jsonHeaders,
+        body: jsonEncode({
+          'text': text,
+          'language': language,
+          'voice': voice,
+        }),
+      );
+    } catch (e) {
+      debugPrint('TTS network error: $e');
+      rethrow;
+    }
+
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      debugPrint(
+        'TTS failed (${resp.statusCode}): ${resp.body.isEmpty ? '<empty body>' : resp.body}',
+      );
+      throw HttpException('TTS error ${resp.statusCode}: ${resp.body}');
+    }
+
+    return resp.bodyBytes;
   }
 }

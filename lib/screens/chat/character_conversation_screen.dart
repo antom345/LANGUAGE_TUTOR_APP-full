@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:language_tutor_app/models/character.dart';
 import 'package:language_tutor_app/screens/chat/chat_screen.dart';
 import 'package:language_tutor_app/screens/home/learning_language_select_screen.dart';
@@ -37,6 +36,9 @@ class _CharacterConversationScreenState
   late final List<String> _characterFrames;
   bool _isPressing = false;
   bool _isChatSheetOpen = false;
+  bool _pendingExternalRecord = false;
+  final ChatViewController _chatViewController = ChatViewController();
+  final ScrollController _chatScrollController = ScrollController();
 
   CharacterLook get _characterLook =>
       characterLookFor(widget.partnerLanguage, widget.partnerGender);
@@ -45,8 +47,12 @@ class _CharacterConversationScreenState
   void initState() {
     super.initState();
     _characterFrames = buildCharacterFrames(widget.partnerLanguage);
-    // Автоматически открываем чат после появления экрана, чтобы сразу стартовал диалог.
-    SchedulerBinding.instance.addPostFrameCallback((_) => _openChatSheet());
+    _chatViewController.onAttached = () {
+      if (_pendingExternalRecord) {
+        _pendingExternalRecord = false;
+        _chatViewController.startRecording();
+      }
+    };
   }
 
   @override
@@ -55,83 +61,95 @@ class _CharacterConversationScreenState
     final partnerName = partnerNameForLanguage(widget.partnerLanguage);
 
     return AppScaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back),
-                    onPressed: () {
-                      Navigator.of(context).pushAndRemoveUntil(
-                        MaterialPageRoute(
-                          builder: (_) => const LearningLanguageSelectScreen(),
+      body: Stack(
+        children: [
+          SafeArea(
+            child: Column(
+              children: [
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back),
+                        onPressed: () {
+                          Navigator.of(context).pushAndRemoveUntil(
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  const LearningLanguageSelectScreen(),
+                            ),
+                            (route) => false,
+                          );
+                        },
+                      ),
+                      Expanded(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              partnerName,
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                            Text(
+                              '${widget.learningLanguage} · level ${widget.level}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelMedium
+                                  ?.copyWith(color: Colors.grey.shade700),
+                            ),
+                          ],
                         ),
-                        (route) => false,
-                      );
-                    },
+                      ),
+                      IconButton(
+                        tooltip: 'История чата',
+                        icon: const Icon(Icons.chat_bubble_outline),
+                        onPressed: () =>
+                            setState(() => _isChatSheetOpen = true),
+                      ),
+                    ],
                   ),
-                  Expanded(
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Column(
-                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(
-                          partnerName,
-                          style: Theme.of(context).textTheme.titleLarge,
+                        SizedBox(
+                          height: size.height * 0.4,
+                          child:
+                              Center(child: _buildCharacterStage(_characterLook)),
                         ),
+                        const SizedBox(height: 16),
                         Text(
-                          '${widget.learningLanguage} · level ${widget.level}',
+                          'Нажмите и удерживайте кнопку внизу, чтобы говорить',
+                          textAlign: TextAlign.center,
                           style: Theme.of(context)
                               .textTheme
-                              .labelMedium
+                              .bodyMedium
                               ?.copyWith(color: Colors.grey.shade700),
                         ),
                       ],
                     ),
                   ),
-                  IconButton(
-                    tooltip: 'История чата',
-                    icon: const Icon(Icons.chat_bubble_outline),
-                    onPressed: _openChatSheet,
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    SizedBox(
-                      height: size.height * 0.4,
-                      child: Center(child: _buildCharacterStage(_characterLook)),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Нажмите и удерживайте кнопку внизу, чтобы говорить',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodyMedium
-                          ?.copyWith(color: Colors.grey.shade700),
-                    ),
-                  ],
                 ),
-              ),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16, top: 8),
+                  child: _VoiceInputBar(
+                    isPressing: _isPressing,
+                    onPressChanged: (value) => setState(() => _isPressing = value),
+                    accent: _characterLook.accentColor,
+                    onLongPressStart: _handleMicPressStart,
+                    onLongPressEnd: _handleMicPressEnd,
+                    onLongPressCancel: _handleMicPressCancel,
+                  ),
+                ),
+              ],
             ),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 16, top: 8),
-              child: _VoiceInputBar(
-                isPressing: _isPressing,
-                onPressChanged: (value) => setState(() => _isPressing = value),
-                accent: _characterLook.accentColor,
-              ),
-            ),
-          ],
-        ),
+          ),
+          _buildPersistentChatSheet(),
+        ],
       ),
     );
   }
@@ -194,70 +212,113 @@ class _CharacterConversationScreenState
     );
   }
 
-  void _openChatSheet() {
-    if (_isChatSheetOpen) return;
-    setState(() => _isChatSheetOpen = true);
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        return DraggableScrollableSheet(
-          initialChildSize: 0.6,
-          minChildSize: 0.4,
-          maxChildSize: 0.95,
-          builder: (context, scrollController) {
-            return Container(
+  Widget _buildPersistentChatSheet() {
+    return IgnorePointer(
+      ignoring: !_isChatSheetOpen,
+      child: AnimatedSlide(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeInOut,
+        offset: _isChatSheetOpen ? Offset.zero : const Offset(0, 1),
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 200),
+          opacity: _isChatSheetOpen ? 1 : 0,
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: Container(
               decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(24),
-                  topRight: Radius.circular(24),
+                color: Colors.transparent,
+              ),
+              child: SafeArea(
+                top: false,
+                child: Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(24),
+                      topRight: Radius.circular(24),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black26,
+                        blurRadius: 18,
+                        offset: Offset(0, -4),
+                      ),
+                    ],
+                  ),
+                  height: MediaQuery.of(context).size.height * 0.65,
+                  child: Column(
+                    children: [
+                      const SizedBox(height: 10),
+                      Container(
+                        width: 48,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade400,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: ChatView(
+                          learningLanguage: widget.learningLanguage,
+                          partnerLanguage: widget.partnerLanguage,
+                          level: widget.level,
+                          topic: widget.topic,
+                          userGender: widget.userGender,
+                          userAge: widget.userAge,
+                          partnerGender: widget.partnerGender,
+                          scrollController: _chatScrollController,
+                          controller: _chatViewController,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          setState(() {
+                            _isChatSheetOpen = false;
+                            _pendingExternalRecord = false;
+                          });
+                        },
+                        child: const Text('Закрыть'),
+                      ),
+                    ],
+                  ),
                 ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black26,
-                    blurRadius: 18,
-                    offset: Offset(0, -4),
-                  ),
-                ],
               ),
-              child: Column(
-                children: [
-                  const SizedBox(height: 10),
-                  Container(
-                    width: 48,
-                    height: 5,
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade400,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: ChatView(
-                      learningLanguage: widget.learningLanguage,
-                      partnerLanguage: widget.partnerLanguage,
-                      level: widget.level,
-                      topic: widget.topic,
-                      userGender: widget.userGender,
-                      userAge: widget.userAge,
-                      partnerGender: widget.partnerGender,
-                      scrollController: scrollController,
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    ).whenComplete(() {
-      if (mounted) {
-        setState(() => _isChatSheetOpen = false);
-      }
-    });
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _handleMicPressStart() {
+    if (_chatViewController.isReady) {
+      _chatViewController.startRecording();
+    } else {
+      _pendingExternalRecord = true;
+    }
+  }
+
+  void _handleMicPressEnd() {
+    _pendingExternalRecord = false;
+    if (_chatViewController.isReady) {
+      _chatViewController.stopRecordingAndSend();
+    }
+  }
+
+  void _handleMicPressCancel() {
+    _pendingExternalRecord = false;
+    if (_chatViewController.isReady) {
+      _chatViewController.cancelRecording();
+    }
+  }
+
+  @override
+  void dispose() {
+    _chatViewController.onAttached = null;
+    _chatScrollController.dispose();
+    super.dispose();
   }
 }
 
@@ -265,11 +326,17 @@ class _VoiceInputBar extends StatelessWidget {
   final bool isPressing;
   final ValueChanged<bool> onPressChanged;
   final Color accent;
+  final VoidCallback onLongPressStart;
+  final VoidCallback onLongPressEnd;
+  final VoidCallback onLongPressCancel;
 
   const _VoiceInputBar({
     required this.isPressing,
     required this.onPressChanged,
     required this.accent,
+    required this.onLongPressStart,
+    required this.onLongPressEnd,
+    required this.onLongPressCancel,
   });
 
   @override
@@ -280,9 +347,18 @@ class _VoiceInputBar extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         child: Center(
           child: GestureDetector(
-            onLongPressStart: (_) => onPressChanged(true),
-            onLongPressEnd: (_) => onPressChanged(false),
-            onLongPressCancel: () => onPressChanged(false),
+            onLongPressStart: (_) {
+              onPressChanged(true);
+              onLongPressStart();
+            },
+            onLongPressEnd: (_) {
+              onPressChanged(false);
+              onLongPressEnd();
+            },
+            onLongPressCancel: () {
+              onPressChanged(false);
+              onLongPressCancel();
+            },
             child: AnimatedScale(
               scale: isPressing ? 1.08 : 1.0,
               duration: const Duration(milliseconds: 150),
