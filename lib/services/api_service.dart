@@ -11,6 +11,24 @@ class ApiService {
   static Map<String, String> get _jsonHeaders =>
       const {'Content-Type': 'application/json'};
 
+  static Map<String, dynamic> _decodeJsonMap({
+    required String body,
+    required String label,
+  }) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+    } catch (_) {
+      // log below
+    }
+
+    final preview = body.length > 300 ? body.substring(0, 300) : body;
+    debugPrint('$label invalid JSON/map. Body preview: $preview');
+    throw const FormatException('Invalid server response format');
+  }
+
   static Future<Map<String, dynamic>> _postJson({
     required Uri uri,
     required Map<String, dynamic> payload,
@@ -39,12 +57,7 @@ class ApiService {
       throw HttpException('$label empty response');
     }
 
-    try {
-      return jsonDecode(resp.body) as Map<String, dynamic>;
-    } catch (e) {
-      debugPrint('$label parse error: $e; body: ${resp.body}');
-      throw HttpException('$label invalid JSON');
-    }
+    return _decodeJsonMap(body: resp.body, label: label);
   }
 
   static Future<Map<String, dynamic>> sendChat({
@@ -67,7 +80,38 @@ class ApiService {
       'partner_gender': partnerGender,
     };
 
-    return _postJson(uri: uri, payload: payload, label: 'Chat');
+    http.Response resp;
+    try {
+      resp = await http.post(
+        uri,
+        headers: _jsonHeaders,
+        body: jsonEncode(payload),
+      );
+    } catch (e) {
+      debugPrint('Chat network error: $e');
+      rethrow;
+    }
+
+    final isOk = resp.statusCode >= 200 && resp.statusCode < 300;
+    final preview =
+        resp.body.length > 300 ? resp.body.substring(0, 300) : resp.body;
+    if (messages.isEmpty) {
+      debugPrint(
+          'Chat first response url=$uri status=${resp.statusCode} len=${resp.body.length}; body preview: $preview');
+    }
+
+    if (!isOk) {
+      debugPrint(
+        'Chat failed (${resp.statusCode}): ${resp.body.isEmpty ? '<empty body>' : resp.body}',
+      );
+      throw HttpException('Chat error ${resp.statusCode}: ${resp.body}');
+    }
+
+    if (resp.body.isEmpty) {
+      throw HttpException('Chat empty response');
+    }
+
+    return _decodeJsonMap(body: resp.body, label: 'Chat');
   }
 
   static Future<Map<String, dynamic>> translateWord({

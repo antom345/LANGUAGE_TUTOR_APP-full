@@ -37,14 +37,14 @@ class ChatController {
     required this.partnerGender,
   });
 
-  Future<Map<String, dynamic>> sendChat(
+  Future<ChatResponseModel> sendChat(
     List<ChatMessage> messages, {
     required bool initial,
   }) async {
     final messagesPayload =
         initial ? <Map<String, String>>[] : _buildMessagesPayload(messages);
 
-    return ApiService.sendChat(
+    final data = await ApiService.sendChat(
       messages: messagesPayload,
       language: language,
       topic: topic,
@@ -53,6 +53,7 @@ class ChatController {
       userAge: userAge,
       partnerGender: partnerGender,
     );
+    return ChatResponseModel.fromJson(data);
   }
 
   Future<TranslationResult> translateWord(String word) async {
@@ -143,4 +144,97 @@ class ChatController {
       return null;
     }
   }
+}
+
+class ChatResponseModel {
+  final String reply;
+  final String? correctionsText;
+  final String? partnerName;
+  final String? audioBase64;
+
+  ChatResponseModel({
+    required this.reply,
+    this.correctionsText,
+    this.partnerName,
+    this.audioBase64,
+  });
+
+  factory ChatResponseModel.fromJson(Map<String, dynamic> json) {
+    String? reply;
+    if (json['reply'] is String && (json['reply'] as String).trim().isNotEmpty) {
+      reply = (json['reply'] as String).trim();
+    } else if (json['message'] is String &&
+        (json['message'] as String).trim().isNotEmpty) {
+      reply = (json['message'] as String).trim();
+    } else if (json['text'] is String &&
+        (json['text'] as String).trim().isNotEmpty) {
+      reply = (json['text'] as String).trim();
+    }
+
+    if (reply == null || reply.isEmpty) {
+      debugPrint('Chat response missing reply. Raw json: $json');
+      throw const FormatException('Invalid server response format');
+    }
+
+    String? corrections =
+        (json['corrections_text'] as String?)?.trim().isNotEmpty == true
+            ? (json['corrections_text'] as String).trim()
+            : null;
+
+    // Если reply содержит слепленные reply/corrections_text — попытаемся распарсить.
+    if (corrections == null &&
+        (reply.contains('reply:') || reply.contains('corrections_text:'))) {
+      final parsed = _extractCombined(reply);
+      if (parsed.reply.isNotEmpty) {
+        reply = parsed.reply;
+      }
+      if (parsed.corrections.isNotEmpty) {
+        corrections = parsed.corrections;
+      }
+    }
+
+    return ChatResponseModel(
+      reply: reply,
+      correctionsText: corrections,
+      partnerName: (json['partner_name'] as String?)?.trim(),
+      audioBase64: json['audio_base64'] as String?,
+    );
+  }
+
+  static _ParsedCombined _extractCombined(String raw) {
+    final lower = raw.toLowerCase();
+    final replyIdx = lower.indexOf('reply:');
+    final corrIdx = lower.indexOf('corrections_text:');
+
+    String reply = raw.trim();
+    String corrections = '';
+
+    String trimVal(String val) => val.trim().replaceFirst(RegExp(r'^[\s.:]+'), '').trim();
+
+    if (replyIdx != -1 && corrIdx != -1) {
+      if (replyIdx < corrIdx) {
+        reply = trimVal(raw.substring(replyIdx + 'reply:'.length, corrIdx));
+        corrections =
+            trimVal(raw.substring(corrIdx + 'corrections_text:'.length));
+      } else {
+        corrections =
+            trimVal(raw.substring(corrIdx + 'corrections_text:'.length, replyIdx));
+        reply = trimVal(raw.substring(replyIdx + 'reply:'.length));
+      }
+    } else if (replyIdx != -1) {
+      reply = trimVal(raw.substring(replyIdx + 'reply:'.length));
+    } else if (corrIdx != -1) {
+      reply = '';
+      corrections =
+          trimVal(raw.substring(corrIdx + 'corrections_text:'.length));
+    }
+
+    return _ParsedCombined(reply: reply, corrections: corrections);
+  }
+}
+
+class _ParsedCombined {
+  final String reply;
+  final String corrections;
+  _ParsedCombined({required this.reply, required this.corrections});
 }

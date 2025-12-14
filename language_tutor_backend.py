@@ -555,6 +555,43 @@ def _parse_json_content(content: str) -> Dict:
     return {}
 
 
+def _parse_textual_reply(content: str) -> Dict[str, str]:
+    """
+    Если модель вернула текст вида "reply: ... corrections_text: ...",
+    пытаемся выдрать поля из строки. Возвращает {"reply": ..., "corrections_text": ...}.
+    """
+    reply = ""
+    corrections = ""
+    if not content:
+        return {"reply": reply, "corrections_text": corrections}
+
+    lower = content.lower()
+    reply_idx = lower.find("reply:")
+    corr_idx = lower.find("corrections_text:")
+
+    def _trim(val: str) -> str:
+        return val.strip(" \n\r\t.:")
+
+    if reply_idx != -1 and corr_idx != -1:
+        if reply_idx < corr_idx:
+            reply = _trim(content[reply_idx + len("reply:") : corr_idx])
+            corrections = _trim(content[corr_idx + len("corrections_text:") :])
+        else:
+            corrections = _trim(content[corr_idx + len("corrections_text:") : reply_idx])
+            reply = _trim(content[reply_idx + len("reply:") :])
+    elif reply_idx != -1:
+        reply = _trim(content[reply_idx + len("reply:") :])
+    elif corr_idx != -1:
+        corrections = _trim(content[corr_idx + len("corrections_text:") :])
+    else:
+        reply = content.strip()
+
+    return {
+        "reply": reply,
+        "corrections_text": corrections,
+    }
+
+
 def llm_chat_completion(
     messages: List[Dict[str, str]],
     temperature: float = 0.4,
@@ -757,12 +794,17 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
     content = llm_chat_completion(messages, temperature=0.4)
 
     data = _parse_json_content(content)
-    reply_text = str(data.get("reply", "")).strip() if data else ""
-    corrections_text = str(data.get("corrections_text", "")).strip() if data else ""
+    reply_text = ""
+    corrections_text = ""
+    if data:
+        reply_text = str(data.get("reply", "")).strip()
+        corrections_text = str(data.get("corrections_text", "")).strip()
 
     if not reply_text:
-        # если модель вдруг ответила не JSON
-        reply_text = (content or "").strip()
+        # Если модель не вернула JSON — пытаемся вытащить reply/corrections из строки
+        parsed = _parse_textual_reply(content or "")
+        reply_text = parsed.get("reply", "").strip()
+        corrections_text = parsed.get("corrections_text", "").strip()
 
     # Если ученик ещё ни разу не писал (только первое приветствие) —
     # не показываем никаких исправлений

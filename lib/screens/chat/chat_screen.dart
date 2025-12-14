@@ -184,6 +184,7 @@ class _ChatViewState extends State<ChatView> {
   static const int _minRecordingBytes = 2000;
 
   late final ChatController _chatController;
+  bool _sentInitialRequest = false;
 
   CharacterLook get _characterLook =>
       characterLookFor(widget.partnerLanguage, widget.partnerGender);
@@ -287,6 +288,9 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _startConversation() async {
+    if (_sentInitialRequest) return;
+    if (_messages.isEmpty) return;
+    _sentInitialRequest = true;
     await _sendToBackend(initial: true);
   }
 
@@ -320,21 +324,22 @@ class _ChatViewState extends State<ChatView> {
 
     try {
       final data = await _chatController.sendChat(_messages, initial: initial);
-      final reply = data['reply'] as String? ?? '';
-      final correctionsText = data['corrections_text'] as String? ?? '';
+      final reply = data.reply;
+      final correctionsText = data.correctionsText ?? '';
       String? assistantReplyForTts;
 
       setState(() {
-        if (reply.trim().isNotEmpty) {
-          final normalized = reply.trim();
-          _messages.add(ChatMessage(role: 'assistant', text: normalized));
-          assistantReplyForTts = normalized;
+        final normalizedReply = reply.trim();
+        if (normalizedReply.isNotEmpty) {
+          _messages.add(ChatMessage(role: 'assistant', text: normalizedReply));
+          assistantReplyForTts = normalizedReply;
         }
-        if (correctionsText.trim().isNotEmpty) {
+        final normalizedCorrections = correctionsText.trim();
+        if (normalizedCorrections.isNotEmpty) {
           _messages.add(
             ChatMessage(
               role: 'assistant',
-              text: correctionsText.trim(),
+              text: normalizedCorrections,
               isCorrections: true,
             ),
           );
@@ -344,6 +349,16 @@ class _ChatViewState extends State<ChatView> {
       if (assistantReplyForTts != null) {
         unawaited(_speakAssistantReply(assistantReplyForTts!));
       }
+    } on FormatException catch (e) {
+      setState(() {
+        _messages.add(
+          ChatMessage(
+            role: 'assistant',
+            text: 'System: Invalid server response format',
+          ),
+        );
+      });
+      debugPrint('CHAT PARSE ERROR: $e');
     } catch (e) {
       setState(() {
         _messages.add(
@@ -479,7 +494,7 @@ class _ChatViewState extends State<ChatView> {
   String _cleanRecognizedText(String raw) {
     var text = raw.trim();
     // Убираем ведущие таймстампы вида [00:00:00.000 --> 00:00:03.440]
-    text = text.replaceFirst(RegExp(r'^\\s*\\[[^\\]]*\\]\\s*'), '');
+    text = text.replaceFirst(RegExp(r'^\s*\[[^\]]*\]\s*'), '');
     return text.trim();
   }
 
