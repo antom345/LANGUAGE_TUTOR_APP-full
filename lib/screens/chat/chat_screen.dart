@@ -265,7 +265,6 @@ class _ChatViewState extends State<ChatView> {
     try {
       final bytes = await _chatController.fetchMessageTtsBytes(normalized);
       if (bytes == null || bytes.isEmpty) {
-        debugPrint('Auto TTS: empty bytes for assistant reply');
         return;
       }
 

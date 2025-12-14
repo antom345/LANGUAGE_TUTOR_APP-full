@@ -151,12 +151,14 @@ class ChatResponseModel {
   final String? correctionsText;
   final String? partnerName;
   final String? audioBase64;
+  final String? audioUrl;
 
   ChatResponseModel({
     required this.reply,
     this.correctionsText,
     this.partnerName,
     this.audioBase64,
+    this.audioUrl,
   });
 
   factory ChatResponseModel.fromJson(Map<String, dynamic> json) {
@@ -198,6 +200,7 @@ class ChatResponseModel {
       correctionsText: corrections,
       partnerName: (json['partner_name'] as String?)?.trim(),
       audioBase64: json['audio_base64'] as String?,
+      audioUrl: json['audio_url'] as String?,
     );
   }
 

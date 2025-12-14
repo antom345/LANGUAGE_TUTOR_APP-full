@@ -201,7 +201,7 @@ class ApiService {
     return LessonContentModel.fromJson(data);
   }
 
-  static Future<Uint8List> synthesizeTts({
+  static Future<Uint8List?> synthesizeTts({
     required String text,
     required String language,
     String? voice,
@@ -220,16 +220,33 @@ class ApiService {
       );
     } catch (e) {
       debugPrint('TTS network error: $e');
-      rethrow;
+      return null;
     }
 
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
       debugPrint(
         'TTS failed (${resp.statusCode}): ${resp.body.isEmpty ? '<empty body>' : resp.body}',
       );
-      throw HttpException('TTS error ${resp.statusCode}: ${resp.body}');
+      return null;
     }
 
-    return resp.bodyBytes;
+    Map<String, dynamic> data;
+    try {
+      data = _decodeJsonMap(body: resp.body, label: 'TTS');
+    } catch (_) {
+      return null;
+    }
+
+    final audioB64 = data['audio_base64'] as String?;
+    if (audioB64 == null || audioB64.isEmpty) {
+      return null;
+    }
+
+    try {
+      return base64Decode(audioB64);
+    } catch (e) {
+      debugPrint('TTS base64 decode error: $e');
+      return null;
+    }
   }
 }

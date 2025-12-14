@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 import os
@@ -10,11 +11,14 @@ import requests
 import httpx
 from typing import Dict, Any
 from io import BytesIO
-import subprocess  # для запуска piper через команду
+import subprocess  # для whisper STT и piper CLI
 import logging
 import tempfile
 import shlex
 import tempfile  # для временного файла в /stt
+import hashlib
+from pathlib import Path
+import time
 
 logger = logging.getLogger("language_tutor_backend")
 
@@ -55,24 +59,13 @@ LANG_ALIASES: Dict[str, list[str]] = {
     "ko": ["ko", "ko-kr", "korean", "한국어", "корейский", "кор"],
 }
 
-# Какой бинарник Piper использовать — настоящий путь на RunPod
-PIPER_BIN = "/workspace/langapp/piper/piper_bin"
-ESPEAK_DATA = "/workspace/langapp/piper/piper/espeak-ng-data"
-
-
-def _piper_env() -> Dict[str, str]:
-    """Return env for Piper with required library/espeak paths ensured."""
-    env = os.environ.copy()
-
-    piper_lib_dir = os.path.join(os.path.dirname(PIPER_BIN), "piper")
-    ld_paths = [piper_lib_dir]
-    if env.get("LD_LIBRARY_PATH"):
-        ld_paths.append(env["LD_LIBRARY_PATH"])
-    env["LD_LIBRARY_PATH"] = os.pathsep.join(ld_paths)
-
-    env.setdefault("ESPEAK_DATA", os.path.join(piper_lib_dir, "espeak-ng-data"))
-    env.setdefault("PIPER_PHONEMIZER_ESPEAK_DATA", env["ESPEAK_DATA"])
-    return env
+def _piper_model_path_for_language(language: str) -> str:
+    lang = normalize_lang_code(language)
+    model_path = LANG_TO_MODEL.get(lang)
+    if model_path:
+        return model_path
+    # Fallback на английский, если язык не найден
+    return LANG_TO_MODEL.get("en") or ""
 
 
 def normalize_lang_code(language: str) -> str:
@@ -106,12 +99,58 @@ def normalize_lang_code(language: str) -> str:
     return lang
 
 
+def synthesize_tts_piper(text: str, model_path: str) -> bytes:
+    """
+    Синтез через бинарник Piper с выводом во временный wav.
+    """
+    import tempfile
+
+    PIPER_BIN = "/workspace/langapp/piper_bin/piper/piper"
+    if not os.path.exists(PIPER_BIN):
+        raise RuntimeError(f"piper binary not found: {PIPER_BIN}")
+    if not model_path or not os.path.exists(model_path):
+        raise RuntimeError(f"piper model not found: {model_path}")
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        out_wav = f.name
+
+    try:
+        proc = subprocess.run(
+            [PIPER_BIN, "--model", model_path, "--output_file", out_wav],
+            input=text.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=os.environ.copy(),
+        )
+
+        if proc.returncode != 0:
+            stderr_preview = proc.stderr.decode("utf-8", "ignore")[:2000]
+            raise RuntimeError(
+                f"piper failed rc={proc.returncode}, stderr={stderr_preview}"
+            )
+
+        with open(out_wav, "rb") as rf:
+            audio = rf.read()
+
+        if not audio or len(audio) < 200:
+            raise RuntimeError("piper produced empty/too small wav")
+
+        return audio
+    finally:
+        try:
+            os.remove(out_wav)
+        except Exception:
+            pass
+
+
 def synthesize_with_piper(text: str, language: str, voice: Optional[str] = None) -> bytes:
     """
-    Озвучка текста через Piper. Возвращает сырые аудиобайты (PCM),
-    которые мы потом кодируем в base64 и отдаём фронту.
+    Озвучка текста через Piper бинарник.
     """
-    lang = normalize_lang_code(language)
+    text = (text or "").strip()
+    if not text:
+        return b""
 
     model_path = None
     if voice:
@@ -122,49 +161,17 @@ def synthesize_with_piper(text: str, language: str, voice: Optional[str] = None)
             model_path = LANG_TO_MODEL.get(voice) or LANG_TO_MODEL.get(voice_code)
 
     if not model_path:
-        model_path = LANG_TO_MODEL.get(lang)
-    if not model_path:
-        raise RuntimeError(
-            f"Нет модели Piper для языка '{language}' "
-            f"(нормализованный код: '{lang}')"
-        )
+        model_path = _piper_model_path_for_language(language)
 
-    if not os.path.exists(model_path):
-        raise RuntimeError(f"Файл модели Piper не найден: {model_path}")
-
-    try:
-        # Piper читает текст из stdin, отдаёт аудио в stdout
-        process = subprocess.run(
-            [
-                PIPER_BIN,
-                "--model",
-                model_path,
-                "--espeak-data",
-                ESPEAK_DATA,
-                "--output_file",
-                "-",
-            ],
-            input=text.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-            env=_piper_env(),
-            timeout=45,
-        )
-    except FileNotFoundError:
-        raise RuntimeError(
-            "Бинарник Piper не найден. "
-            f"Проверь, что файл существует и исполняемый: {PIPER_BIN}"
-        )
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(
-            "Piper завершился с ошибкой: "
-            f"{e.stderr.decode('utf-8', errors='ignore')}"
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Piper synthesis timed out")
-
-    return process.stdout
+    t0 = time.time()
+    audio = synthesize_tts_piper(text, model_path)
+    logger.info(
+        "[TTS] Piper synth took %.2fs bytes=%d model=%s",
+        time.time() - t0,
+        len(audio),
+        model_path,
+    )
+    return audio
 
 
 # ==================   КОНЕЦ БЛОКА PIPER   ==================
@@ -186,6 +193,9 @@ BACKEND_HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
 
 TTS_BASE_URL = os.getenv("TTS_BASE_URL", "http://127.0.0.1:5001").rstrip("/")
+AUDIO_BASE_URL = os.getenv("AUDIO_BASE_URL", "https://api.languagetutorapp.org").rstrip("/")
+AUDIO_CACHE_DIR = Path(os.getenv("AUDIO_CACHE_DIR", "/workspace/langapp/audio_cache"))
+AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 LLM_TYPE = os.getenv("LLM_TYPE", "ollama")
 
@@ -368,6 +378,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Раздаём сгенерированные аудиофайлы
+app.mount("/audio", StaticFiles(directory=AUDIO_CACHE_DIR), name="audio")
 
 # ---------- Модели запросов/ответов ----------
 
@@ -398,6 +410,7 @@ class ChatResponse(BaseModel):
     reply: str
     corrections_text: str
     partner_name: str
+    audio_url: Optional[str] = None
     audio_base64: Optional[str] = None
 
 
@@ -405,6 +418,8 @@ class TTSRequest(BaseModel):
     text: str
     language: Optional[str] = "en"
     voice: Optional[str] = None  # опциональный выбор конкретной модели
+    character: Optional[str] = None
+    sample_rate: Optional[int] = None
 
 
 class STTResponse(BaseModel):
@@ -818,6 +833,7 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
         reply=reply_text,
         corrections_text=corrections_text,
         partner_name=partner_name,
+        audio_url=None,
         audio_base64=None,
     )
 
@@ -1039,18 +1055,25 @@ async def tts_endpoint(req: TTSRequest):
         raise HTTPException(status_code=400, detail="Text is required for TTS")
 
     try:
-        logger.info(
-            "[TTS] Piper synthesis language=%s voice=%s text=%r",
-            req.language,
-            req.voice,
-            text,
-        )
-        audio = synthesize_with_piper(text, req.language or "en", voice=req.voice)
-        headers = {
-            "Cache-Control": "no-store",
-            "Content-Disposition": 'inline; filename="tts.wav"',
-        }
-        return Response(content=audio, media_type="audio/wav", headers=headers)
+        cache_key_raw = f"{req.voice or ''}|{req.sample_rate or ''}|{req.language or ''}|{text}"
+        cache_key = hashlib.sha1(cache_key_raw.encode("utf-8")).hexdigest()
+        filename = f"{cache_key}.wav"
+        filepath = AUDIO_CACHE_DIR / filename
+
+        if filepath.exists():
+            audio_bytes = filepath.read_bytes()
+        else:
+            model_path = _piper_model_path_for_language(req.language or "en")
+            logger.info(
+                "[TTS] Piper synthesis start model=%s text_len=%d",
+                model_path,
+                len(text),
+            )
+            audio_bytes = synthesize_with_piper(text, req.language or "en", voice=req.voice)
+            filepath.write_bytes(audio_bytes)
+
+        audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+        return {"audio_base64": audio_b64}
     except HTTPException:
         raise
     except Exception as e:
