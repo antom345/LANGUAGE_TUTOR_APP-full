@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -201,7 +200,7 @@ class ApiService {
     return LessonContentModel.fromJson(data);
   }
 
-  static Future<Uint8List?> synthesizeTts({
+  static Future<String?> synthesizeTts({
     required String text,
     required String language,
     String? voice,
@@ -230,22 +229,16 @@ class ApiService {
       return null;
     }
 
-    Map<String, dynamic> data;
     try {
-      data = _decodeJsonMap(body: resp.body, label: 'TTS');
-    } catch (_) {
-      return null;
-    }
-
-    final audioB64 = data['audio_base64'] as String?;
-    if (audioB64 == null || audioB64.isEmpty) {
-      return null;
-    }
-
-    try {
-      return base64Decode(audioB64);
+      final data = _decodeJsonMap(body: resp.body, label: 'TTS');
+      final audioUrl = data['audio_url'] as String?;
+      if (audioUrl == null || audioUrl.isEmpty) {
+        debugPrint('TTS missing audio_url in response');
+        return null;
+      }
+      return audioUrl;
     } catch (e) {
-      debugPrint('TTS base64 decode error: $e');
+      debugPrint('TTS parse error: $e');
       return null;
     }
   }

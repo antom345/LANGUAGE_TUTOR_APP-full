@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -170,7 +168,7 @@ class _ChatViewState extends State<ChatView> {
   bool _isSending = false;
   final List<SavedWord> _savedWords = [];
   final AudioPlayer _audioPlayer = AudioPlayer();
-  final Queue<Uint8List> _ttsQueue = Queue<Uint8List>();
+  final Queue<String> _ttsQueue = Queue<String>();
   bool _isTtsPlaying = false;
   StreamSubscription<void>? _playerCompleteSub;
 
@@ -206,25 +204,15 @@ class _ChatViewState extends State<ChatView> {
     _startConversation();
   }
 
-  Future<bool> _playTtsBytes(Uint8List bytes) async {
-    if (bytes.isEmpty) {
-      debugPrint('TTS: empty bytes, skip');
+  Future<bool> _playTtsFromUrl(String url) async {
+    if (url.isEmpty) {
+      debugPrint('TTS: empty url, skip');
       return false;
     }
 
     try {
-      final dir = await getTemporaryDirectory();
-      final filePath =
-          '${dir.path}/tts_${DateTime.now().millisecondsSinceEpoch}.wav';
-      final file = File(filePath);
-      await file.writeAsBytes(bytes, flush: true);
-
-      debugPrint(
-        'TTS: temp file saved to $filePath (${bytes.lengthInBytes} bytes)',
-      );
-
       await _audioPlayer.stop();
-      await _audioPlayer.play(DeviceFileSource(filePath));
+      await _audioPlayer.play(UrlSource(url));
       return true;
     } catch (e) {
       debugPrint('TTS play error: $e');
@@ -232,9 +220,9 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
-  void _enqueueTts(Uint8List bytes) {
-    if (bytes.isEmpty) return;
-    _ttsQueue.add(bytes);
+  void _enqueueTtsUrl(String url) {
+    if (url.isEmpty) return;
+    _ttsQueue.add(url);
     if (!_isTtsPlaying) {
       unawaited(_playNextQueued());
     }
@@ -242,9 +230,9 @@ class _ChatViewState extends State<ChatView> {
 
   Future<void> _playNextQueued() async {
     if (_isTtsPlaying || _ttsQueue.isEmpty) return;
-    final next = _ttsQueue.removeFirst();
+    final nextUrl = _ttsQueue.removeFirst();
     _isTtsPlaying = true;
-    final ok = await _playTtsBytes(next);
+    final ok = await _playTtsFromUrl(nextUrl);
     if (!ok) {
       _isTtsPlaying = false;
       await _playNextQueued();
@@ -263,13 +251,13 @@ class _ChatViewState extends State<ChatView> {
     if (normalized.isEmpty) return;
 
     try {
-      final bytes = await _chatController.fetchMessageTtsBytes(normalized);
-      if (bytes == null || bytes.isEmpty) {
+      final audioUrl = await _chatController.fetchMessageTtsUrl(normalized);
+      if (audioUrl == null || audioUrl.isEmpty) {
         return;
       }
 
       if (!mounted) return;
-      _enqueueTts(bytes);
+      _enqueueTtsUrl(audioUrl);
     } catch (e, st) {
       debugPrint('Auto TTS error: $e\n$st');
     }
@@ -546,16 +534,7 @@ class _ChatViewState extends State<ChatView> {
       final translation = result.translation;
       final example = result.example;
       final exampleTranslation = result.exampleTranslation;
-      Uint8List? audioBytes;
-
-      final audioBase64 = result.audioBase64;
-      if (audioBase64 != null && audioBase64.isNotEmpty) {
-        try {
-          audioBytes = base64Decode(audioBase64);
-        } catch (e, st) {
-          debugPrint('TRANSLATE AUDIO DECODE ERROR: $e\n$st');
-        }
-      }
+      String? audioUrl = result.audioUrl;
 
       if (!mounted) return;
 
@@ -593,18 +572,18 @@ class _ChatViewState extends State<ChatView> {
                         isAudioLoading = true;
                       });
 
-                      if (audioBytes == null) {
-                        final fetchedBytes =
-                            await _chatController.fetchWordAudioBytes(word);
+                      if (audioUrl?.isEmpty ?? true) {
+                        final fetchedUrl =
+                            await _chatController.fetchWordAudioUrl(word);
 
                         if (!context.mounted) return;
 
                         dialogSetState(() {
                           isAudioLoading = false;
-                          audioBytes = fetchedBytes;
+                          audioUrl = fetchedUrl;
                         });
 
-                        if (fetchedBytes == null || fetchedBytes.isEmpty) {
+                        if (fetchedUrl?.isEmpty ?? true) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content:
@@ -619,7 +598,7 @@ class _ChatViewState extends State<ChatView> {
                         });
                       }
 
-                      _enqueueTts(audioBytes!);
+                      _enqueueTtsUrl(audioUrl!);
                     },
                   ),
                   IconButton(

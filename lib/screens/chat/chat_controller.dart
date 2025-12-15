@@ -1,6 +1,4 @@
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:language_tutor_app/models/message.dart';
@@ -10,13 +8,13 @@ class TranslationResult {
   final String translation;
   final String example;
   final String exampleTranslation;
-  final String? audioBase64;
+  final String? audioUrl;
 
   TranslationResult({
     required this.translation,
     required this.example,
     required this.exampleTranslation,
-    this.audioBase64,
+    this.audioUrl,
   });
 }
 
@@ -67,18 +65,22 @@ class ChatController {
       example: data['example'] as String? ?? 'нет примера',
       exampleTranslation:
           data['example_translation'] as String? ?? 'нет перевода примера',
-      audioBase64: data['audio_base64'] as String?,
+      audioUrl: data['audio_url'] as String?,
     );
   }
 
-  Future<Uint8List?> fetchWordAudioBytes(String word) async {
+  Future<String?> fetchWordAudioUrl(String word) async {
     final data = await ApiService.translateWord(
       word: word,
       language: language,
       withAudio: true,
     );
-    final audio = data['audio_base64'] as String?;
-    return _decodeAudio(audio);
+    final audioUrl = data['audio_url'] as String?;
+    if (audioUrl == null || audioUrl.isEmpty) {
+      debugPrint('Translate audio_url is empty');
+      return null;
+    }
+    return audioUrl;
   }
 
   Future<String> speechToText(File file) async {
@@ -120,7 +122,7 @@ class ChatController {
     }
   }
 
-  Future<Uint8List?> fetchMessageTtsBytes(String text) async {
+  Future<String?> fetchMessageTtsUrl(String text) async {
     final normalized = text.trim();
     if (normalized.isEmpty) return null;
 
@@ -134,30 +136,18 @@ class ChatController {
       return null;
     }
   }
-
-  Uint8List? _decodeAudio(String? audio) {
-    if (audio == null || audio.isEmpty) return null;
-    try {
-      return base64Decode(audio);
-    } catch (e, st) {
-      debugPrint('TTS decode error: $e\n$st');
-      return null;
-    }
-  }
 }
 
 class ChatResponseModel {
   final String reply;
   final String? correctionsText;
   final String? partnerName;
-  final String? audioBase64;
   final String? audioUrl;
 
   ChatResponseModel({
     required this.reply,
     this.correctionsText,
     this.partnerName,
-    this.audioBase64,
     this.audioUrl,
   });
 
@@ -199,7 +189,6 @@ class ChatResponseModel {
       reply: reply,
       correctionsText: corrections,
       partnerName: (json['partner_name'] as String?)?.trim(),
-      audioBase64: json['audio_base64'] as String?,
       audioUrl: json['audio_url'] as String?,
     );
   }

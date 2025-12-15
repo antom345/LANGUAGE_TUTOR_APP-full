@@ -6,15 +6,10 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 import os
 import json
-import base64
-import requests
 import httpx
 from typing import Dict, Any
-from io import BytesIO
 import subprocess  # для whisper STT и piper CLI
 import logging
-import tempfile
-import shlex
 import tempfile  # для временного файла в /stt
 import hashlib
 from pathlib import Path
@@ -174,6 +169,47 @@ def synthesize_with_piper(text: str, language: str, voice: Optional[str] = None)
     return audio
 
 
+def _build_tts_cache_filename(
+    text: str,
+    language: Optional[str],
+    voice: Optional[str],
+    sample_rate: Optional[int],
+) -> str:
+    cache_key_raw = f"{voice or ''}|{sample_rate or ''}|{language or ''}|{text}"
+    cache_key = hashlib.sha1(cache_key_raw.encode("utf-8")).hexdigest()
+    return f"{cache_key}.wav"
+
+
+def _ensure_cached_tts_file(
+    text: str,
+    language: Optional[str],
+    voice: Optional[str],
+    sample_rate: Optional[int],
+) -> Path:
+    """
+    Returns path to cached wav file for given TTS params, generating it if needed.
+    """
+    filename = _build_tts_cache_filename(text, language, voice, sample_rate)
+    filepath = AUDIO_CACHE_DIR / filename
+
+    if filepath.exists():
+        return filepath
+
+    model_path = _piper_model_path_for_language(language or "en")
+    logger.info(
+        "[TTS] Piper synthesis start model=%s text_len=%d",
+        model_path,
+        len(text),
+    )
+    audio_bytes = synthesize_with_piper(text, language or "en", voice=voice)
+    filepath.write_bytes(audio_bytes)
+    return filepath
+
+
+def _build_audio_url(filename: str) -> str:
+    return f"{AUDIO_BASE_URL}/audio/{filename}"
+
+
 # ==================   КОНЕЦ БЛОКА PIPER   ==================
 
 # ------------------ LOCAL WHISPER STT (whisper.cpp) ------------------
@@ -189,13 +225,12 @@ except Exception:
 
 # ---------- Config via environment ----------
 # These settings let us move the service without changing code.
-BACKEND_HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
-BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
-
-TTS_BASE_URL = os.getenv("TTS_BASE_URL", "http://127.0.0.1:5001").rstrip("/")
-AUDIO_BASE_URL = os.getenv("AUDIO_BASE_URL", "https://api.languagetutorapp.org").rstrip("/")
 AUDIO_CACHE_DIR = Path(os.getenv("AUDIO_CACHE_DIR", "/workspace/langapp/audio_cache"))
 AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+AUDIO_BASE_URL = os.getenv("AUDIO_BASE_URL", "https://api.languagetutorapp.org").rstrip("/")
+
+BACKEND_HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
+BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
 
 LLM_TYPE = os.getenv("LLM_TYPE", "ollama")
 
@@ -215,7 +250,6 @@ LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 
 # Env guide:
 # - BACKEND_HOST / BACKEND_PORT — где стартует FastAPI.
-# - TTS_BASE_URL — базовый URL нового TTS (например, http://127.0.0.1:5001).
 # - LLM_BASE_URL / LLM_MODEL / LLM_API_KEY — параметры нового чат-LLM.
 # - OPENAI_API_KEY — остаётся только для STT.
 
@@ -411,7 +445,6 @@ class ChatResponse(BaseModel):
     corrections_text: str
     partner_name: str
     audio_url: Optional[str] = None
-    audio_base64: Optional[str] = None
 
 
 class TTSRequest(BaseModel):
@@ -438,8 +471,7 @@ class TranslateResponse(BaseModel):
     translation: str
     example: str
     example_translation: str
-    # base64-encoded audio (PCM/raw) for the word pronunciation
-    audio_base64: Optional[str] = None
+    audio_url: Optional[str] = None
 
 
 class CoursePreferences(BaseModel):
@@ -668,40 +700,6 @@ def llm_chat_completion(
 
 
 
-def synthesize_tts(text: str, language: str) -> Optional[str]:
-    """
-    Запрашиваем новый TTS сервис и возвращаем base64 аудио.
-    Совместимо с фронтом, который ждёт audio_base64.
-    """
-    if not text:
-        return None
-
-    try:
-        resp = requests.post(
-            f"{TTS_BASE_URL}/synthesize",
-            json={"text": text, "language": language},
-            timeout=60,
-        )
-        resp.raise_for_status()
-
-        # Если TTS вернул JSON с audio_base64 — используем его
-        if resp.headers.get("content-type", "").startswith("application/json"):
-            data = resp.json()
-            audio_b64 = data.get("audio_base64") or data.get("audio")
-            if audio_b64:
-                return str(audio_b64)
-
-        audio_bytes = resp.content
-        if audio_bytes:
-            return base64.b64encode(audio_bytes).decode("utf-8")
-    except Exception as e:
-        logger.exception("[TTS] error while calling external TTS: %s", e)
-
-    return None
-
-
-
-
 def get_partner_name(language: str, partner_gender: str) -> str:
     """Подбираем имя собеседника под язык и пол."""
     female_names = {
@@ -834,7 +832,6 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
         corrections_text=corrections_text,
         partner_name=partner_name,
         audio_url=None,
-        audio_base64=None,
     )
 
 
@@ -896,25 +893,29 @@ Answer STRICTLY as JSON, without any extra text:
     if not example_translation:
         example_translation = "перевод примера не указан"
 
-    # ---------- 2. Озвучка через Piper ----------
-    audio_b64: Optional[str] = None
+    # ---------- 2. Озвучка через Piper + кеш  ----------
+    audio_url: Optional[str] = None
 
     if include_audio:
         try:
             text = (word or "").strip()
             if text:
-                logger.info("[TTS] Piper synthesis start language=%s text=%r", language, text)
-                audio_bytes = synthesize_with_piper(text, language)
-                audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-        except Exception as e:
+                filepath = _ensure_cached_tts_file(
+                    text,
+                    language,
+                    voice=None,
+                    sample_rate=None,
+                )
+                audio_url = _build_audio_url(filepath.name)
+        except Exception:
             logger.exception("TTS ERROR (Piper) language=%s text=%r", language, word)
-            audio_b64 = None
+            audio_url = None
 
     return TranslateResponse(
         translation=translation,
         example=example,
         example_translation=example_translation,
-        audio_base64=audio_b64,
+        audio_url=audio_url,
     )
 
 
@@ -1055,30 +1056,23 @@ async def tts_endpoint(req: TTSRequest):
         raise HTTPException(status_code=400, detail="Text is required for TTS")
 
     try:
-        cache_key_raw = f"{req.voice or ''}|{req.sample_rate or ''}|{req.language or ''}|{text}"
-        cache_key = hashlib.sha1(cache_key_raw.encode("utf-8")).hexdigest()
-        filename = f"{cache_key}.wav"
-        filepath = AUDIO_CACHE_DIR / filename
-
-        if filepath.exists():
-            audio_bytes = filepath.read_bytes()
-        else:
-            model_path = _piper_model_path_for_language(req.language or "en")
-            logger.info(
-                "[TTS] Piper synthesis start model=%s text_len=%d",
-                model_path,
-                len(text),
-            )
-            audio_bytes = synthesize_with_piper(text, req.language or "en", voice=req.voice)
-            filepath.write_bytes(audio_bytes)
-
-        audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
-        return {"audio_base64": audio_b64}
+        filepath = _ensure_cached_tts_file(
+            text,
+            req.language,
+            req.voice,
+            req.sample_rate,
+        )
+        audio_url = _build_audio_url(filepath.name)
+        return {"audio_url": audio_url}
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("[TTS] Piper failed: %s", e)
-        raise HTTPException(status_code=500, detail="TTS synthesis failed")
+        # Возвращаем ответ без аудио, чтобы не ломать фронт
+        return JSONResponse(
+            status_code=200,
+            content={"audio_url": None, "error": "TTS synthesis failed"},
+        )
 
 @app.post("/translate-word", response_model=TranslateResponse)
 async def translate_word_endpoint(payload: TranslateRequest):
