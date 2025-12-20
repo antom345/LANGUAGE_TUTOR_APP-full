@@ -284,6 +284,7 @@ COURSE_PLAN_SYSTEM_PROMPT = """
    - description: краткое описание реальной жизненной ситуации с лёгким юмором (например, неловкое знакомство, смешной заказ в кафе и т.п.).
    - grammar_topics: список конкретных грамматических ПОДТЕМ именно этого урока (подмножество или детализация target_grammar).
    - vocab_topics: список конкретных лексических ПОДТЕМ именно этого урока (подмножество или детализация target_vocab).
+   - experience_line: 1 строка про ожидаемый опыт/XP (например, "Опыт: закрепишь Future Simple и лексику встреч (+15 XP)").
 
 ВАЖНО:
 - target_grammar и target_vocab в CourseLevel — это ОБЩИЕ темы всего уровня.
@@ -322,84 +323,161 @@ COURSE_PLAN_SYSTEM_PROMPT = """
     * Каждый Lesson содержит id, title, type, description, grammar_topics, vocab_topics.
 """
 
-
 LESSON_SYSTEM_PROMPT = """
-Ты — опытный преподаватель иностранного языка и автор интерактивных упражнений в стиле Duolingo.
+You are an expert language teacher and course designer.
 
-Ты СОЗДАЁШЬ ПОЛНОЕ СОДЕРЖАНИЕ ОДНОГО КОНКРЕТНОГО УРОКА.
+Your task is to generate a FULL, RICH language lesson in STRICT JSON format.
+The lesson will be used inside a mobile language-learning app similar to Duolingo.
 
-В user-сообщении ты получаешь JSON с такими полями (названия могут совпадать с моделями из кода):
-- language: язык урока (например, "English").
-- level_hint: примерный уровень (A1, A2, B1, B2, C1, C2 или пусто).
-- lesson_title: название урока.
-- grammar_topics: список грамматических подтем ИМЕННО ЭТОГО урока.
-- vocab_topics: список лексических подтем ИМЕННО ЭТОГО урока.
-- при необходимости могут быть goals / interests (если они добавлены в код и передаются).
+────────────────────────────────
+MANDATORY RULES (CRITICAL)
+────────────────────────────────
 
-ТВОЯ ЗАДАЧА:
-- На основе lesson_title, grammar_topics, vocab_topics, уровня и (при наличии) интересов ученика сгенерировать LessonContent:
-  * описание урока;
-  * список упражнений (LessonExercise) в строгом JSON-формате, который ожидает backend.
+1. You MUST generate **8 to 10 exercises**.
+   - Less than 8 exercises is NOT allowed.
+   - More than 10 exercises is NOT allowed.
 
-СТИЛЬ УРОКА:
-- Урок должен быть живым, с лёгким юмором, но без грубостей.
-- Все ситуации и предложения должны быть реалистичными: кафе, работа, путешествия, общение с друзьями, учёба и т.п.
-- При наличии interests в данных урок можно слегка подстраивать под эти интересы (например, делать примеры про спорт, IT, путешествия и т.д.).
+2. Output ONLY valid JSON.
+   - No markdown
+   - No explanations
+   - No comments
+   - No extra text
 
-УРОВЕНЬ ЯЗЫКА:
-- Уровни A1–A2:
-    * Простые предложения.
-    * Базовая лексика.
-    * Грамматические темы — очень простые (настоящее время, артикли, простые местоимения).
-    * Инструкции к упражнениям — максимально короткие и понятные.
-- Уровень B1:
-    * Более сложные предложения, но всё ещё без перегруза.
-    * Появляются времена, модальные глаголы, более сложные структуры.
-    * Лексика — бытовая и общественная (работа, хобби, путешествия).
-- Уровень B2:
-    * Длинные предложения, сложносочинённые конструкции.
-    * Больше абстрактных тем (мнения, планы, обсуждение проблем).
-    * Лексика — более продвинутая, но всё ещё практичная.
-- Уровни C1 и C2:
-    * НЕ СОЗДАВАЙ базовых грамматических упражнений.
-    * Grammar_topics можно игнорировать или использовать только как описания уже известных структур.
-    * Фокус на:
-        - сложной лексике,
-        - устойчивых выражениях (collocations),
-        - идиомах,
-        - перефразировании,
-        - стилистике (формальный / неформальный регистр),
-        - аргументации и выражении мнения,
-        - понимании подтекста.
-    * Даже если используются те же типы упражнений (multiple_choice, translate_sentence, fill_in_blank, reorder_words), содержание внутри них должно быть насыщенным и "взрослым".
+3. The JSON MUST strictly match this structure:
 
-ТИПЫ УПРАЖНЕНИЙ:
-- Используй ТОЛЬКО те типы, которые уже поддерживаются текущей моделью данных в коде (не добавляй новые типы).
-- Минимальный набор, который нужно обязательно задействовать:
-    * multiple_choice
-    * translate_sentence
-    * fill_in_blank
-    * reorder_words
-- Для fill_in_blank:
-    * ВСЕГДА заполняй sentence_with_gap — предложение с «___» на месте пропуска.
-    * correct_answer — одно слово или короткое устойчивое выражение.
-    * explanation — НЕ пустая строка, чётко объясняет, что вставить (часть речи, число слов, смысл), чтобы ответ был однозначен.
-    * избегай двусмысленных предложений: естественный правильный ответ должен быть один.
-- В пределах этих типов старайся делать задания разнообразными:
-    * менять темы предложений;
-    * использовать и диалоги, и отдельные фразы;
-    * иногда добавлять лёгкий юмор или неловкие бытовые ситуации.
+{
+  "lesson_id": string,
+  "lesson_title": string,
+  "description": string,
+  "exercises": [ ... ]
+}
 
-ОБЪЁМ:
-- В одном уроке должно быть примерно 6–10 упражнений.
-- Лексика из vocab_topics должна активно повторяться в разных заданиях, чтобы ученик её закреплял.
+────────────────────────────────
+ALLOWED EXERCISE TYPES
+────────────────────────────────
 
-ВЫВОД:
-- Ты ВСЕГДА возвращаешь СТРОГО JSON БЕЗ пояснительного текста.
-- Структура JSON должна строго соответствовать Pydantic-модели LessonContent и вложенным моделям упражнений, которые уже есть в коде:
-    * LessonContent содержит общую информацию об уроке и список exercises.
-    * Каждый элемент в exercises имеет поля type, instruction, варианты ответов/правильный ответ и т.п. — ровно так, как это сейчас ожидается backend’ом.
+You MUST use a MIX of the following exercise types.
+Do NOT repeat the same type more than 2 times in a row.
+
+1) multiple_choice
+2) translate_sentence
+3) fill_in_blank
+4) choose_correct_form
+5) sentence_order
+6) open_answer   (checked later by AI)
+
+────────────────────────────────
+EXERCISE FORMAT
+────────────────────────────────
+
+1) multiple_choice
+{
+  "id": string,
+  "type": "multiple_choice",
+  "instruction": string,
+  "question": string,
+  "options": [string, string, string, string],
+  "correct_index": number,
+  "explanation": string
+}
+
+2) translate_sentence
+{
+  "id": string,
+  "type": "translate_sentence",
+  "instruction": string,
+  "question": string,
+  "correct_answer": string,
+  "explanation": string
+}
+
+3) fill_in_blank
+{
+  "id": string,
+  "type": "fill_in_blank",
+  "instruction": string,
+  "question": string,
+  "correct_answer": string,
+  "explanation": string
+}
+
+4) choose_correct_form
+{
+  "id": string,
+  "type": "choose_correct_form",
+  "instruction": string,
+  "question": string,
+  "options": [string, string, string],
+  "correct_index": number,
+  "explanation": string
+}
+
+5) sentence_order
+{
+  "id": string,
+  "type": "sentence_order",
+  "instruction": string,
+  "words": [string, string, string, string],
+  "correct_sentence": string,
+  "explanation": string
+}
+
+6) open_answer
+{
+  "id": string,
+  "type": "open_answer",
+  "instruction": string,
+  "question": string,
+  "sample_answer": string,
+  "evaluation_criteria": string
+}
+
+────────────────────────────────
+CONTENT GUIDELINES
+────────────────────────────────
+
+• Главный фокус урока — грамматика (времена, порядок слов, согласование, формы глаголов). Даже словарные задания должны подкреплять грамматический паттерн.
+• Exercises should gradually increase in difficulty.
+• Focus on practical, real-life language usage.
+• Use natural, spoken language.
+• Avoid childish or trivial examples.
+• Do NOT repeat the same sentence with small variations.
+• Grammar and vocabulary must match the lesson topic.
+• В каждом уроке используй минимум 3 разных типа упражнений.
+• Для exercise type "translate_sentence":
+  - Инструкция ОБЯЗАТЕЛЬНО на русском языке (например, "Переведите предложение на английский язык.").
+  - В question помещай предложение на русском языке с кириллицей. Никакой латинской транслитерации.
+
+────────────────────────────────
+QUALITY REQUIREMENTS
+────────────────────────────────
+
+• The lesson should feel like a REAL mini-course.
+• At least:
+  - 2 grammar-focused tasks
+  - 2 vocabulary-focused tasks
+  - 2 sentence-level tasks
+• The final exercises should combine grammar + vocabulary.
+
+FINAL EXERCISE RULE:
+• The LAST exercise MUST be an "open_answer"
+• This is the BOSS TASK
+• It must combine grammar + vocabulary
+• It should simulate a real-life situation
+• Difficulty: higher than previous exercises
+
+────────────────────────────────
+FINAL CHECK BEFORE OUTPUT
+────────────────────────────────
+
+Before producing output, internally verify:
+✓ JSON is valid
+✓ 8–10 exercises included
+✓ Exercise formats are correct
+✓ Language matches lesson language
+✓ No forbidden text outside JSON
 """
+
 
 app = FastAPI()
 
@@ -495,6 +573,10 @@ class Lesson(BaseModel):
     description: str
     grammar_topics: List[str] = []
     vocab_topics: List[str] = []
+    experience_line: str = Field(
+        default="",
+        description="Краткая строка о том, какой опыт/XP даст урок.",
+    )
 
 
 class CourseLevel(BaseModel):
@@ -531,16 +613,22 @@ class LessonExercise(BaseModel):
 
     type:
       - multiple_choice      — выбор правильного варианта
+      - choose_correct_form  — выбор правильной формы (такой же формат, как multiple_choice)
       - translate_sentence   — перевод предложения целиком
       - fill_in_blank        — пропуск в предложении
       - reorder_words        — расставить слова в правильном порядке
+      - sentence_order       — собрать предложение из слов
+      - open_answer          — развёрнутый ответ, проверяется LLM
     """
     id: str
     type: Literal[
         "multiple_choice",
+        "choose_correct_form",
         "translate_sentence",
         "fill_in_blank",
         "reorder_words",
+        "sentence_order",
+        "open_answer",
     ]
 
     # Общие поля
@@ -561,6 +649,10 @@ class LessonExercise(BaseModel):
     # Для reorder_words
     reorder_words: Optional[List[str]] = None      # список слов в случайном порядке
     reorder_correct: Optional[List[str]] = None    # тот же список, но в правильном порядке
+
+    # Для open_answer (и умной проверки)
+    sample_answer: Optional[str] = None
+    evaluation_criteria: Optional[str] = None
 
 
 class LessonContent(BaseModel):
@@ -1083,142 +1175,381 @@ async def translate_word_endpoint(payload: TranslateRequest):
         include_audio=bool(payload.with_audio),
     )
 
+def _fallback_course_plan(prefs: CoursePreferences) -> CoursePlan:
+    # Минимальный валидный план, чтобы фронт не падал
+    lvl = CourseLevel(
+        level_index=1,
+        title=f"Starter ({(prefs.level_hint or '').strip() or 'A1'})",
+        description="Auto-generated fallback plan (LLM unavailable or invalid JSON).",
+        target_grammar=["present simple", "basic questions"],
+        target_vocab=["greetings", "daily routine"],
+        lessons=[
+            Lesson(
+                id="lesson_1",
+                title="Making Plans",
+                type="mixed",
+                description="Basic phrases for making plans and invitations.",
+                grammar_topics=["future arrangements"],
+                vocab_topics=["schedule", "meet", "time"],
+                experience_line="Опыт: научишься строить планы и приглашения (12 XP).",
+            ),
+            Lesson(
+                id="lesson_2",
+                title="Inviting Someone",
+                type="mixed",
+                description="Invitations and responses.",
+                grammar_topics=["polite requests"],
+                vocab_topics=["invite", "accept", "decline"],
+                experience_line="Опыт: уверенно делаешь приглашения и отвечаешь (12 XP).",
+            ),
+            Lesson(
+                id="lesson_3",
+                title="Agreeing on Time",
+                type="mixed",
+                description="Time expressions and confirmations.",
+                grammar_topics=["prepositions of time"],
+                vocab_topics=["at", "on", "in", "o'clock"],
+                experience_line="Опыт: закрепляешь время и согласование встреч (12 XP).",
+            ),
+            Lesson(
+                id="lesson_4",
+                title="Changing Plans",
+                type="mixed",
+                description="Rescheduling and apologizing.",
+                grammar_topics=["can/could", "sorry + reason"],
+                vocab_topics=["reschedule", "busy", "free"],
+                experience_line="Опыт: учишься переносить планы и извиняться (12 XP).",
+            ),
+            Lesson(
+                id="lesson_5",
+                title="Making Suggestions",
+                type="mixed",
+                description="Suggestions and preferences.",
+                grammar_topics=["let's", "why don't we"],
+                vocab_topics=["suggest", "prefer", "rather"],
+                experience_line="Опыт: предлагаешь идеи и обсуждаешь предпочтения (12 XP).",
+            ),
+            Lesson(
+                id="lesson_6",
+                title="Final Practice",
+                type="mixed",
+                description="Mixed practice for the topic.",
+                grammar_topics=["review"],
+                vocab_topics=["review"],
+                experience_line="Опыт: итоговая практика темы (15 XP).",
+            ),
+        ],
+    ) 
+
+    return CoursePlan(
+        language=prefs.language,
+        overall_level=(prefs.level_hint or "").strip(),
+        levels=[lvl],
+    )
+
+
+def _ensure_min_lessons(
+    plan: CoursePlan,
+    prefs: CoursePreferences,
+    min_lessons: int = 6
+) -> CoursePlan:
+    if not plan.levels:
+        return _fallback_course_plan(prefs)
+
+    level = plan.levels[0]
+
+    if not level.lessons:
+        level.lessons = []
+
+    if len(level.lessons) >= min_lessons:
+        return plan
+
+    base_title = level.lessons[0].title if level.lessons else "Lesson"
+
+    while len(level.lessons) < min_lessons:
+        idx = len(level.lessons) + 1
+        level.lessons.append(
+                Lesson(
+                    id=f"lesson_{idx}",
+                    title=f"{base_title} #{idx}",
+                    type="mixed",
+                    description="Auto-added lesson",
+                    grammar_topics=["review"],
+                    vocab_topics=["review"],
+                    experience_line="Опыт: повторение ключевых тем (10 XP).",
+                )
+        )
+
+    plan.levels[0] = level
+    return plan
+
+
+
+def _fallback_lesson(req: LessonRequest) -> LessonContent:
+    # Минимальный валидный урок, чтобы экран урока всегда открывался
+    title = (req.lesson_title or "Lesson").strip() or "Lesson"
+    return LessonContent(
+        lesson_id=title.replace(" ", "_").lower(),
+        lesson_title=title,
+        description="Fallback lesson (LLM unavailable or invalid JSON).",
+        exercises=[
+            LessonExercise(
+                id="ex_1",
+                type="multiple_choice",
+                instruction="Choose the best option.",
+                question="You want to invite a friend. What do you say?",
+                options=["Let's make plans for tomorrow.", "I ate a sandwich.", "The weather is blue."],
+                correct_index=0,
+                explanation="Use an invitation / planning phrase.",
+            ),
+            LessonExercise(
+                id="ex_2",
+                type="translate_sentence",
+                instruction="Translate into the target language.",
+                question="Давай встретимся в 7 вечера.",
+                correct_answer="Let's meet at 7 pm.",
+                explanation="Simple invitation + time.",
+            ),
+        ],
+    )
+
+
+
 @app.post("/generate_course_plan", response_model=CoursePlan)
 def generate_course_plan(prefs: CoursePreferences):
     """
     Генерирует поуровневый план курса на основе предпочтений ученика.
-    Пока НИЧЕГО не сохраняем, просто отдаём план фронтенду.
     """
+    try:
+        user_content = json.dumps(prefs.dict(), ensure_ascii=False)
 
-    # prefs.dict() превращаем в JSON-строку и отправляем как контекст
-    user_content = json.dumps(prefs.dict(), ensure_ascii=False)
+        content = llm_chat_completion(
+            [
+                {"role": "system", "content": COURSE_PLAN_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Вот данные ученика в JSON:\n{user_content}"},
+            ],
+            temperature=0.4,
+        )
 
-    content = llm_chat_completion(
-        [
-            {"role": "system", "content": COURSE_PLAN_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Вот данные ученика в JSON:\n{user_content}"},
-        ],
-        temperature=0.4,
-    )
+        data = _parse_json_content(content)
+        if not data or not isinstance(data, dict):
+            raise ValueError("Failed to parse course plan JSON from model")
 
-    data = _parse_json_content(content)
-    if not data:
-        # на всякий случай, если модель сделает фигню
-        raise ValueError("Failed to parse course plan JSON from model")
+        if ("language" not in data) or (not isinstance(data.get("language"), str)):
+            data["language"] = prefs.language
 
-    # Подстраховка: если модель не вернула обязательные поля, добиваем из prefs
-    if (
-        "language" not in data
-        or not isinstance(data.get("language"), str)
-        or not data.get("language", "").strip()
-    ):
-        data["language"] = prefs.language
+        if ("overall_level" not in data) or (not isinstance(data.get("overall_level"), str)):
+            data["overall_level"] = (prefs.level_hint or "").strip()
 
-    if (
-        "overall_level" not in data
-        or not isinstance(data.get("overall_level"), str)
-    ):
-        data["overall_level"] = (prefs.level_hint or "").strip()
+        if "levels" not in data or not isinstance(data["levels"], list):
+            raise ValueError("Model did not provide 'levels' list in course plan")
 
-    if "levels" not in data or not isinstance(data["levels"], list):
-        raise ValueError("Model did not provide 'levels' list in course plan")
+        plan = CoursePlan(**data)
+        plan = _ensure_min_lessons(plan, prefs, min_lessons=6)
+        return plan
 
-    # Pydantic сам проверит, что структура корректна
-    return CoursePlan(**data)
+
+    except Exception as e:
+        logger.exception("[COURSE_PLAN] failed, returning fallback: %s", e)
+        return _fallback_course_plan(prefs)
+
 
 
 @app.post("/generate_lesson", response_model=LessonContent)
 def generate_lesson(req: LessonRequest):
-    """
-    Генерирует набор УМНЫХ упражнений для конкретного урока.
-    Типы заданий: multiple_choice, translate_sentence, fill_in_blank, reorder_words.
-    """
+    try:
+        user_payload = {
+            "language": req.language,
+            "level_hint": req.level_hint,
+            "lesson_title": req.lesson_title,
+            "grammar_topics": req.grammar_topics,
+            "vocab_topics": req.vocab_topics,
+            "interests": req.interests,
+        }
 
-    # Что передаём в модель как входные данные для урока
-    user_payload = {
-        "language": req.language,
-        "level_hint": req.level_hint or "",
-        "lesson_title": req.lesson_title,
-        "grammar_topics": req.grammar_topics or [],
-        "vocab_topics": req.vocab_topics or [],
-        "interests": req.interests or [],
-    }
+        content = llm_chat_completion(
+            [
+                {"role": "system", "content": LESSON_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"Сгенерируй урок строго в JSON формате.\nВходные данные:\n{json.dumps(user_payload, ensure_ascii=False)}",
+                },
+            ],
+            temperature=0.5,
+        )
 
-    content = llm_chat_completion(
-        [
-            {"role": "system", "content": LESSON_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": "Сгенерируй урок по следующим параметрам:\n"
-                           + json.dumps(user_payload, ensure_ascii=False),
-            },
-        ],
-        temperature=0.4,
-    )
+        data = _parse_json_content(content)
+        if not data or not isinstance(data, dict):
+            raise ValueError("Invalid lesson JSON")
 
-    data = _parse_json_content(content)
-    if not data:
-        raise ValueError("Failed to parse lesson JSON from model")
+        # --- нормализация базовых полей ---
+        data.setdefault("lesson_title", req.lesson_title or "Lesson")
+        data.setdefault("description", "Auto-generated lesson")
+        data.setdefault(
+            "lesson_id",
+            (data["lesson_title"] or "lesson").replace(" ", "_").lower(),
+        )
 
-    # Подстраховка: проверяем обязательные поля и чистим упражнения
-    if not isinstance(data, dict):
-        raise ValueError("Lesson JSON root must be an object")
+        raw_exercises = data.get("exercises", [])
+        fixed_exercises = []
 
-    if (
-        "lesson_id" not in data
-        or not isinstance(data.get("lesson_id"), str)
-        or not data.get("lesson_id", "").strip()
-    ):
-        data["lesson_id"] = (req.lesson_title or "lesson").strip() or "lesson"
+        for i, ex in enumerate(raw_exercises):
+            if not isinstance(ex, dict):
+                continue
 
-    if (
-        "lesson_title" not in data
-        or not isinstance(data.get("lesson_title"), str)
-        or not data.get("lesson_title", "").strip()
-    ):
-        data["lesson_title"] = req.lesson_title
+            ex_type = str(ex.get("type") or "").strip().lower()
+            if not ex_type:
+                continue
 
-    if "description" not in data or not isinstance(data.get("description"), str):
-        data["description"] = ""
+            instruction = str(ex.get("instruction") or "").strip()
+            question = str(ex.get("question") or "").strip()
+            explanation = str(ex.get("explanation") or "").strip()
 
-    exercises = data.get("exercises")
-    if not isinstance(exercises, list):
-        raise ValueError("Model did not provide 'exercises' list in lesson JSON")
+            if ex_type == "translate_sentence" and not instruction:
+                instruction = "Переведите предложение на английский язык."
 
-    fixed_exercises = []
-    for idx, ex in enumerate(exercises):
-        if not isinstance(ex, dict):
-            continue
+            ex_fixed: Dict[str, Any] = {
+                "id": ex.get("id", f"ex_{i+1}"),
+                "type": ex_type,
+                "instruction": instruction or "Выполните задание.",
+                "question": question,
+                "explanation": explanation or "Разбор будет показан после проверки.",
+            }
 
-        if (
-            "id" not in ex
-            or not isinstance(ex.get("id"), str)
-            or not ex.get("id", "").strip()
-        ):
-            ex["id"] = f"ex_{idx + 1}"
+            if ex_type in ("multiple_choice", "choose_correct_form"):
+                options = ex.get("options", [])
+                correct = ex.get("correct_index")
 
-        if ex.get("type") not in (
-            "multiple_choice",
-            "translate_sentence",
-            "fill_in_blank",
-            "reorder_words",
-        ):
-            ex["type"] = "multiple_choice"
+                if (
+                    isinstance(options, list)
+                    and len(options) >= 2
+                    and isinstance(correct, int)
+                ):
+                    ex_fixed["options"] = [str(opt) for opt in options]
+                    ex_fixed["correct_index"] = correct
+                else:
+                    continue
 
-        if "question" not in ex or not isinstance(ex.get("question"), str):
-            ex["question"] = ""
+            elif ex_type in ("translate_sentence", "fill_in_blank"):
+                answer = ex.get("correct_answer")
+                if isinstance(answer, str) and answer.strip():
+                    ex_fixed["correct_answer"] = answer
+                    if ex_type == "fill_in_blank":
+                        gap_sentence = ex.get("sentence_with_gap")
+                        if isinstance(gap_sentence, str) and gap_sentence.strip():
+                            ex_fixed["sentence_with_gap"] = gap_sentence
+                else:
+                    continue
 
-        if "explanation" not in ex or not isinstance(ex.get("explanation"), str):
-            ex["explanation"] = ""
+            elif ex_type in ("reorder_words", "sentence_order"):
+                words = ex.get("reorder_words") or ex.get("words")
+                correct_order = ex.get("reorder_correct")
+                correct_sentence = ex.get("correct_sentence") or ex.get("correct_answer")
 
-        fixed_exercises.append(ex)
+                if not isinstance(words, list) or len(words) < 2:
+                    continue
 
-    if not fixed_exercises:
-        raise ValueError("Lesson has no valid exercises after cleanup")
+                if not isinstance(correct_order, list) and isinstance(correct_sentence, str):
+                    tokens = [w.strip() for w in correct_sentence.split() if w.strip()]
+                    correct_order = tokens
 
-    data["exercises"] = fixed_exercises
+                if not isinstance(correct_order, list) or not correct_order:
+                    continue
 
-    return LessonContent(**data)
+                ex_fixed["reorder_words"] = [str(w) for w in words]
+                ex_fixed["reorder_correct"] = [str(w) for w in correct_order]
+                if isinstance(correct_sentence, str) and correct_sentence.strip():
+                    ex_fixed["correct_answer"] = correct_sentence.strip()
+
+            elif ex_type == "open_answer":
+                sample_answer = ex.get("sample_answer") or ex.get("sampleAnswer")
+                evaluation = ex.get("evaluation_criteria") or ex.get("evaluationCriteria")
+                if not isinstance(sample_answer, str) or not sample_answer.strip():
+                    continue
+
+                ex_fixed["sample_answer"] = sample_answer.strip()
+                ex_fixed["evaluation_criteria"] = (
+                    evaluation.strip()
+                    if isinstance(evaluation, str) and evaluation.strip()
+                    else "Оцените грамматику, лексику и связность ответа."
+                )
+
+            else:
+                # неизвестный тип — пропускаем
+                continue
+
+            fixed_exercises.append(LessonExercise(**ex_fixed))
+
+        if not fixed_exercises:
+            logger.warning("[LESSON] no valid exercises, returning fallback lesson")
+            return _fallback_lesson(req)
+
+        return LessonContent(
+            lesson_id=data["lesson_id"],
+            lesson_title=data["lesson_title"],
+            description=data["description"],
+            exercises=fixed_exercises,
+        )
+
+    except Exception as e:
+        logger.exception("[LESSON] generation failed, returning fallback: %s", e)
+        return _fallback_lesson(req)
+    
+class CheckAnswerRequest(BaseModel):
+    exercise_type: str
+    question: str
+    user_answer: str
+    correct_answer: Optional[str] = None
+    sample_answer: Optional[str] = None
+    evaluation_criteria: Optional[str] = None
+    language: str
+
+class CheckAnswerResponse(BaseModel):
+    is_correct: bool
+    score: int  # 0–100
+    feedback: str
+
+@app.post("/check_answer", response_model=CheckAnswerResponse)
+def check_answer(req: CheckAnswerRequest):
+    try:
+        user_payload = {
+            "exercise_type": req.exercise_type,
+            "question": req.question,
+            "user_answer": req.user_answer,
+            "correct_answer": req.correct_answer,
+            "sample_answer": req.sample_answer,
+            "evaluation_criteria": req.evaluation_criteria,
+            "language": req.language,
+        }
+
+        content = llm_chat_completion(
+            [
+                {"role": "system", "content": ANSWER_CHECK_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(user_payload, ensure_ascii=False),
+                },
+            ],
+            temperature=0.2,
+        )
+
+        data = _parse_json_content(content)
+
+        return CheckAnswerResponse(
+            is_correct=bool(data.get("is_correct")),
+            score=int(data.get("score", 0)),
+            feedback=data.get("feedback", "No feedback"),
+        )
+
+    except Exception as e:
+        logger.exception("[CHECK_ANSWER] failed: %s", e)
+        return CheckAnswerResponse(
+            is_correct=False,
+            score=0,
+            feedback="Could not evaluate answer. Please try again.",
+        )
+
+
 
 
 # ---------- Локальный запуск ----------
@@ -1226,4 +1557,4 @@ def generate_lesson(req: LessonRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=BACKEND_HOST, port=BACKEND_PORT)
+uvicorn.run(app, host=BACKEND_HOST, port=BACKEND_PORT)
