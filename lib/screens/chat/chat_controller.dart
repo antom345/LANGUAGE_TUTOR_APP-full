@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:language_tutor_app/models/message.dart';
+import 'package:language_tutor_app/models/situation.dart';
 import 'package:language_tutor_app/services/api_service.dart';
 
 class TranslationResult {
@@ -38,6 +39,7 @@ class ChatController {
   Future<ChatResponseModel> sendChat(
     List<ChatMessage> messages, {
     required bool initial,
+    SituationContext? situation,
   }) async {
     final messagesPayload =
         initial ? <Map<String, String>>[] : _buildMessagesPayload(messages);
@@ -50,6 +52,7 @@ class ChatController {
       userGender: userGender,
       userAge: userAge,
       partnerGender: partnerGender,
+      situation: situation,
     );
     return ChatResponseModel.fromJson(data);
   }

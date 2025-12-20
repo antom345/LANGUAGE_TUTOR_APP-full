@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:language_tutor_app/models/lesson.dart';
+import 'package:language_tutor_app/models/situation.dart';
 import 'package:language_tutor_app/utils/constants.dart';
 
 class ApiService {
@@ -67,6 +68,7 @@ class ApiService {
     required String userGender,
     required int? userAge,
     required String partnerGender,
+    SituationContext? situation,
   }) async {
     final uri = Uri.parse('$kApiBaseUrl/chat');
     final payload = {
@@ -78,6 +80,9 @@ class ApiService {
       'user_age': userAge,
       'partner_gender': partnerGender,
     };
+    if (situation != null) {
+      payload['situation'] = situation.toJson();
+    }
 
     http.Response resp;
     try {
@@ -144,6 +149,28 @@ class ApiService {
 
     final jsonMap = jsonDecode(body) as Map<String, dynamic>;
     return (jsonMap['text'] ?? '') as String;
+  }
+
+  static Future<SituationContext> generateSituation({
+    required String language,
+    required String level,
+    required String character,
+    String? topicHint,
+  }) async {
+    final uri = Uri.parse('$kApiBaseUrl/generate_situation');
+    final payload = {
+      'language': language,
+      'level': level,
+      'character': character,
+      'topic_hint': topicHint ?? '',
+    };
+
+    final data = await _postJson(
+      uri: uri,
+      payload: payload,
+      label: 'Generate situation',
+    );
+    return SituationContext.fromJson(data);
   }
 
   static Future<CoursePlan> generateCoursePlan({

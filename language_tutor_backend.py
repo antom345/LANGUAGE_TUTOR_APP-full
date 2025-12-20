@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
@@ -238,7 +239,7 @@ LLM_TYPE = os.getenv("LLM_TYPE", "ollama")
 LLM_BASE_URL = "http://127.0.0.1:11434"
 
 # имя модели в ollama
-LLM_MODEL="llama3.1:8b"
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1:8b")
 
 # новый URL для ollama 0.3+ (НЕ /v1/chat/completions!)
 LLM_CHAT_COMPLETIONS_URL = LLM_BASE_URL + "/api/chat"
@@ -496,6 +497,22 @@ app.mount("/audio", StaticFiles(directory=AUDIO_CACHE_DIR), name="audio")
 # ---------- Модели запросов/ответов ----------
 
 
+class SituationContext(BaseModel):
+    my_role: str = Field(..., alias="my_role")
+    partner_role: str = Field(..., alias="partner_role")
+    circumstances: str
+
+    class Config:
+        allow_population_by_field_name = True
+
+
+class GenerateSituationRequest(BaseModel):
+    language: str
+    level: str
+    character: str
+    topic_hint: Optional[str] = Field(default=None, alias="topic_hint")
+
+
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -509,6 +526,8 @@ class ChatRequest(BaseModel):
     user_age: Optional[int] = None
     partner_gender: Optional[str] = "female"     # "male" / "female"
     messages: List[ChatMessage]
+    character: Optional[str] = None
+    situation: Optional[SituationContext] = None
 
 class LegacyChatRequest(BaseModel):
     # Старый формат, который посылает Flutter
@@ -673,6 +692,21 @@ def _llm_headers() -> Dict[str, str]:
     return headers
 
 
+LLM_HTTP = httpx.Client(
+    timeout=LLM_TIMEOUT,
+    trust_env=False,  # игнорируем proxy из окружения, чтобы не тормозить localhost
+    headers=_llm_headers(),
+)
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    try:
+        LLM_HTTP.close()
+    except Exception:
+        pass
+
+
 def _parse_json_content(content: str) -> Dict:
     """Пытаемся извлечь JSON даже если модель обернула его в текст/markdown."""
     if not content:
@@ -745,30 +779,16 @@ def llm_chat_completion(
         },
     }
 
+    t0 = time.time()
     try:
-        headers = _llm_headers()
-        logger.debug("[LLM] POST %s payload=%s", LLM_CHAT_COMPLETIONS_URL, payload)
-
-        logger.info("[LLM] POST %s", LLM_CHAT_COMPLETIONS_URL)
-        logger.warning("[LLM DEBUG] LLM_BASE_URL=%s", LLM_BASE_URL)
-        logger.warning("[LLM DEBUG] chat_url=%s", LLM_CHAT_COMPLETIONS_URL)
-        
-
-        resp = httpx.post(
-            
+        resp = LLM_HTTP.post(
             LLM_CHAT_COMPLETIONS_URL,      # http://127.0.0.1:11434/api/chat
-            headers=headers,
             json=payload,
-            timeout=LLM_TIMEOUT,
-            trust_env=False,               # ВАЖНО: игнорируем proxy из окружения
         )
 
-        # Если вдруг /api/chat отдаёт 404 (как у тебя в логах) — пробуем /api/generate
-
-
+        dt_ms = (time.time() - t0) * 1000
         resp.raise_for_status()
         data = resp.json()
-
 
         # формат ответа ollama:
         # {"message": {"role": "assistant", "content": "..."} , ...}
@@ -780,10 +800,18 @@ def llm_chat_completion(
         if not isinstance(content, str):
             content = str(content)
 
+        logger.info(
+            "[LLM] POST %s %s in %.0fms text_len=%d",
+            LLM_CHAT_COMPLETIONS_URL,
+            resp.status_code,
+            dt_ms,
+            len(content),
+        )
         return content.strip()
 
     except Exception:
-        logger.exception("[LLM] error while calling chat completion")
+        dt_ms = (time.time() - t0) * 1000
+        logger.exception("[LLM] error while calling chat completion (%.0fms)", dt_ms)
         return "Sorry, something went wrong. Could you write that again?"
 
 
@@ -823,8 +851,8 @@ def build_system_prompt(
     topic: Optional[str],
     partner_gender: Optional[str],
     partner_name: str,
+    situation: Optional[SituationContext] = None,
 ) -> str:
-    """Короткий system prompt без лишних персональных деталей."""
     lang = language or "English"
     level = level or "B1"
     topic = topic or "General conversation"
@@ -835,19 +863,43 @@ def build_system_prompt(
     else:
         partner_role = "female friend"
 
+    situation_contract = ""
+    if situation:
+        situation_contract = f"""
+SITUATION CONTRACT:
+- Learner role: {situation.my_role}
+- Your role: {situation.partner_role}
+- Circumstances: {situation.circumstances}
+
+Obligations:
+- Reply strictly as {situation.partner_role}; never say you are an AI.
+- Stay inside the described circumstances and tone; use fitting vocabulary.
+- If the user goes off-topic, gently steer back and suggest an in-context reply.
+- Keep answers concise and natural (1–3 sentences).
+- Corrections: brief, helpful, and stay in the scene.
+"""
+
     return f"""
-You talk to a {level} {lang} learner. Your character name is {partner_name}. You are a friendly {partner_role} and native {lang} speaker. Keep the chat casual about {topic}.
+You are a friendly, professional {lang} tutor for a {level} learner. Your name is {partner_name}, a {partner_role} native speaker. Topic: {topic}.
 
-Rules:
-- Reply ONLY in {lang}, 1–3 sentences, natural and human-like.
-- Stay in character; never say you are an AI.
-- Correct ONLY the learner's last user message, never assistant messages.
-- Put conversation text in "reply" only; put all corrections in "corrections_text" only.
-- Correct grammar/word choice/word order; ignore capitalization and harmless punctuation.
-- If there are no real mistakes, set "corrections_text" to an empty string.
-- Do not repeat corrections or copy the user's original sentence.
+Goals:
+- Reply only in {lang} with short, natural answers (1-3 sentences) that keep the conversation moving.
+- Be concise and relevant; avoid introductions, sign-offs, and filler.
+- Encourage dialogue with occasional brief follow-up questions.
 
-Return STRICT JSON:
+Error correction:
+- Correct only the learner's last user message; ignore assistant messages.
+- First give the corrected version, then a short plain-language note on the fix.
+- Focus on grammar, word choice, and word order; ignore minor casing/punctuation unless meaning changes.
+- If there are no real mistakes, leave "corrections_text" empty and do not invent issues.
+- Do not repeat the user's original sentence.
+
+Style:
+- Sound human, not like a textbook or AI; never say you are an AI or language model.
+- Avoid repetitive explanations and meta-commentary.
+{situation_contract}
+Output:
+Return STRICT JSON only:
 {{"reply":"...","corrections_text":"..."}}
 """
 
@@ -870,15 +922,56 @@ def topics_for_language(language: str) -> List[str]:
     return base_topics
 
 
+def _normalize_situation_from_dict(
+    raw: Dict[str, Any],
+    req: Optional[GenerateSituationRequest] = None,
+) -> SituationContext:
+    def _field(keys, default=""):
+        for key in keys:
+            val = raw.get(key)
+            if val is None:
+                continue
+            text = str(val).strip()
+            if text:
+                return text
+        return default
+
+    lang = req.language if req else "English"
+    level = req.level if req else "B1"
+    partner_name = req.character if req else "conversation partner"
+    hint = req.topic_hint if req else ""
+
+    my_role_default = f"{lang} learner at level {level}"
+    partner_role_default = f"{partner_name}, a native speaker helping with practice"
+    circumstances_default = f"Practicing {lang} about {hint or 'a realistic daily scenario'}"
+
+    my_role = _field(["my_role", "myRole"], my_role_default)
+    partner_role = _field(["partner_role", "partnerRole"], partner_role_default)
+    circumstances = _field(
+        ["circumstances", "context", "situation"],
+        circumstances_default,
+    )
+
+    return SituationContext(
+        my_role=my_role,
+        partner_role=partner_role,
+        circumstances=circumstances,
+    )
+
+
 def call_llm_chat(req: ChatRequest) -> ChatResponse:
     """Вызов новой LLM для чат-диалога с коррекциями."""
-    partner_name = get_partner_name(req.language, req.partner_gender or "female")
+    partner_name = (req.character or "").strip() or get_partner_name(
+        req.language,
+        req.partner_gender or "female",
+    )
     system_prompt = build_system_prompt(
         language=req.language,
         level=req.level,
         topic=req.topic,
         partner_gender=req.partner_gender,
         partner_name=partner_name,
+        situation=req.situation,
     )
 
     history_messages = [
@@ -896,6 +989,8 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history_messages)
 
+    logger.info("[CHAT] situation present: %s", "yes" if req.situation else "no")
+
     content = llm_chat_completion(messages, temperature=0.4)
 
     data = _parse_json_content(content)
@@ -904,6 +999,12 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
     if data:
         reply_text = str(data.get("reply", "")).strip()
         corrections_text = str(data.get("corrections_text", "")).strip()
+        # Если модель вернула только corrections_text в JSON, а сам ответ оставила снаружи,
+        # пытаемся взять текст до первого JSON-блока как reply.
+        if not reply_text and content:
+            bracket_idx = content.find("{")
+            if bracket_idx > 0:
+                reply_text = content[:bracket_idx].strip()
 
     if not reply_text:
         # Если модель не вернула JSON — пытаемся вытащить reply/corrections из строки
@@ -925,6 +1026,50 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
         partner_name=partner_name,
         audio_url=None,
     )
+
+
+def call_generate_situation(req: GenerateSituationRequest) -> SituationContext:
+    """Генерация ситуации диалога через тот же LLM."""
+    system_prompt = f"""
+Ты придумываешь неожиданные, забавные, иногда слегка абсурдные ситуации для диалогов.
+Сгенерируй 3 строки (каждая 6-20 слов):
+- my_role
+- partner_role
+- circumstances (место/цель/обстоятельства/настроение)
+
+Входные параметры:
+- language: {req.language}
+- level: {req.level}
+- partner persona/name: {req.character}
+
+Требования:
+- Сделай сценарий необычным и весёлым, но безопасным (без насилия/секса/политики/токсичности).
+- Соответствуй языку и уровню; вплети персонажа в partner_role и обстоятельства.
+- Добавляй рандомные неожиданные элементы (например: странные места, юморные ограничения, любопытные цели).
+- Верни ТОЛЬКО JSON без дополнительного текста:
+{{"my_role":"...","partner_role":"...","circumstances":"..."}}
+"""
+
+    user_payload = {
+        "language": req.language,
+        "level": req.level,
+        "character": req.character,
+        "topic_hint": req.topic_hint,
+    }
+
+    content = llm_chat_completion(
+        [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": json.dumps(user_payload, ensure_ascii=False),
+            },
+        ],
+        temperature=0.7,
+    )
+
+    data = _parse_json_content(content)
+    return _normalize_situation_from_dict(data or {}, req)
 
 
 
@@ -1016,6 +1161,38 @@ Answer STRICTLY as JSON, without any extra text:
 # ---------- Эндпоинты FastAPI ----------
 
 
+def _run_whisper_stt(lang_code: str, audio_bytes: bytes, suffix: str) -> STTResponse:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
+        tmp.write(audio_bytes)
+        tmp.flush()
+
+        cmd = [
+            WHISPER_BIN,
+            "-m", WHISPER_MODEL,
+            "-f", tmp.name,
+            "-l", lang_code,
+        ]
+
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+        )
+
+        if proc.returncode != 0:
+            logging.error(
+                f"Whisper STT error (code {proc.returncode}): {proc.stderr}"
+            )
+            raise HTTPException(status_code=500, detail="Whisper STT failed")
+
+        text = proc.stdout.strip()
+
+        return STTResponse(
+            text=text,
+            language=lang_code,
+        )
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
@@ -1046,36 +1223,7 @@ async def stt_endpoint(
         ext = ".wav"
 
     try:
-        # сохраняем во временный файл
-        with tempfile.NamedTemporaryFile(suffix=ext, delete=True) as tmp:
-            tmp.write(contents)
-            tmp.flush()
-
-            cmd = [
-                WHISPER_BIN,
-                "-m", WHISPER_MODEL,
-                "-f", tmp.name,
-                "-l", language_code,
-            ]
-
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-            )
-
-            if proc.returncode != 0:
-                logging.error(
-                    f"Whisper STT error (code {proc.returncode}): {proc.stderr}"
-                )
-                raise HTTPException(status_code=500, detail="Whisper STT failed")
-
-            text = proc.stdout.strip()
-
-            return STTResponse(
-                text=text,
-                language=language_code,
-            )
+        return await asyncio.to_thread(_run_whisper_stt, language_code, contents, ext)
     except HTTPException:
         raise
     except Exception as e:
@@ -1089,6 +1237,23 @@ async def get_topics(language: str = "English"):
         "language": language,
         "topics": topics_for_language(language),
     }
+
+
+@app.post("/generate_situation", response_model=SituationContext)
+async def generate_situation_endpoint(req: GenerateSituationRequest):
+    t0 = time.time()
+    try:
+        situation = await asyncio.to_thread(call_generate_situation, req)
+        return situation
+    except Exception as e:
+        logger.exception("[GENERATE_SITUATION] failed: %s", e)
+        return _normalize_situation_from_dict({}, req)
+    finally:
+        logger.info(
+            "[GENERATE_SITUATION] took %.0fms hint=%s",
+            (time.time() - t0) * 1000,
+            req.topic_hint or "",
+        )
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -1137,7 +1302,7 @@ async def chat_endpoint(payload: dict = Body(...)):
 
 
     # НОВЫЙ ВЫЗОВ
-    response = call_llm_chat(req)
+    response = await asyncio.to_thread(call_llm_chat, req)
     return response
 
 
@@ -1169,10 +1334,11 @@ async def tts_endpoint(req: TTSRequest):
 @app.post("/translate-word", response_model=TranslateResponse)
 async def translate_word_endpoint(payload: TranslateRequest):
     lang = payload.language or "English"
-    return call_llm_translate(
+    return await asyncio.to_thread(
+        call_llm_translate,
         lang,
         payload.word,
-        include_audio=bool(payload.with_audio),
+        bool(payload.with_audio),
     )
 
 def _fallback_course_plan(prefs: CoursePreferences) -> CoursePlan:

@@ -5,6 +5,7 @@ class LessonPlan {
   final String description;
   final List<String> grammarTopics;
   final List<String> vocabTopics;
+  final String experienceLine;
 
   LessonPlan({
     required this.id,
@@ -13,6 +14,7 @@ class LessonPlan {
     required this.description,
     required this.grammarTopics,
     required this.vocabTopics,
+    this.experienceLine = '',
   });
 
   factory LessonPlan.fromJson(Map<String, dynamic> json) {
@@ -25,6 +27,8 @@ class LessonPlan {
           (json['grammar_topics'] as List<dynamic>?)?.cast<String>() ?? const [],
       vocabTopics:
           (json['vocab_topics'] as List<dynamic>?)?.cast<String>() ?? const [],
+      experienceLine:
+          (json['experience_line'] as String?)?.trim() ?? '',
     );
   }
 }
@@ -32,17 +36,20 @@ class LessonPlan {
 class LessonExercise {
   final String id;
 
-  /// multiple_choice / translate_sentence / fill_in_blank / reorder_words
+  /// multiple_choice / translate_sentence / fill_in_blank /
+  /// reorder_words / open_answer / choose_correct_form / sentence_order
   final String type;
 
-  /// Общий текст вопроса / задания
+  /// Краткая инструкция
   final String? instruction;
+
+  /// Основной текст вопроса
   final String question;
 
-  /// Объяснение после проверки
+  /// Пояснение после проверки
   final String explanation;
 
-  /// Только для multiple_choice
+  /// Для multiple_choice
   final List<String>? options;
   final int? correctIndex;
 
@@ -50,9 +57,13 @@ class LessonExercise {
   final String? correctAnswer;
   final String? sentenceWithGap;
 
-  /// Для reorder_words
+  /// Для reorder_words / sentence_order
   final List<String>? reorderWords;
   final List<String>? reorderCorrect;
+
+  /// 👇 НОВЫЕ ПОЛЯ ДЛЯ AI-ПРОВЕРКИ
+  final String? sampleAnswer;       // пример эталонного ответа
+  final String? evaluationCriteria; // критерии проверки (для LLM)
 
   LessonExercise({
     required this.id,
@@ -66,6 +77,8 @@ class LessonExercise {
     this.sentenceWithGap,
     this.reorderWords,
     this.reorderCorrect,
+    this.sampleAnswer,
+    this.evaluationCriteria,
   });
 
   factory LessonExercise.fromJson(Map<String, dynamic> json) {
@@ -73,25 +86,37 @@ class LessonExercise {
     final reorderWordsRaw = (json['reorder_words'] as List?)?.cast<dynamic>();
     final reorderCorrectRaw =
         (json['reorder_correct'] as List?)?.cast<dynamic>();
+
     return LessonExercise(
       id: (json['id'] ?? '').toString(),
       type: (json['type'] ?? '').toString(),
       question: (json['question'] ?? '').toString(),
       explanation: (json['explanation'] ?? '').toString(),
       instruction: (json['instruction'] as String?)?.trim(),
-      options: optionsList?.map((e) => e.toString()).toList(),
+
+      /// multiple_choice
+      options: optionsList?.map((e) => e.toString()).toList(growable: false),
       correctIndex: json['correct_index'] is int
           ? json['correct_index'] as int
           : int.tryParse(json['correct_index']?.toString() ?? ''),
+
+      /// translate_sentence / fill_in_blank
       correctAnswer: (json['correct_answer'] as String?)?.trim(),
       sentenceWithGap: (json['sentence_with_gap'] as String?)?.trim(),
+
+      /// reorder_words / sentence_order
       reorderWords:
           reorderWordsRaw?.map((e) => e.toString()).toList(growable: false),
       reorderCorrect:
           reorderCorrectRaw?.map((e) => e.toString()).toList(growable: false),
+
+      /// 👇 новые поля
+      sampleAnswer: (json['sample_answer'] as String?)?.trim(),
+      evaluationCriteria: (json['evaluation_criteria'] as String?)?.trim(),
     );
   }
 }
+
 
 class LessonContentModel {
   final String lessonId;

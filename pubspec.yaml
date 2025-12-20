@@ -1,0 +1,50 @@
+name: language_tutor_app
+description: Language learning app with animated characters and voice input
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  http: ^1.2.2
+  audioplayers: ^6.0.0
+  path_provider: ^2.1.4
+  record: ^6.1.2
+  provider: ^6.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    ## ---------- FULL HEIGHT ANIMATIONS (CHAT) ----------
+    - assets/anim/default/
+    - assets/anim/french/
+    - assets/anim/german/
+    - assets/anim/italian/
+    - assets/anim/korean/
+    - assets/anim/spanish/
+
+    ## ---------- TOP-DOWN MAP ANIMATIONS ----------
+    - assets/anim_map/default/
+    - assets/anim_map/french/
+    - assets/anim_map/german/
+    - assets/anim_map/italian/
+    - assets/anim_map/korean/
+    - assets/anim_map/spanish/
+
+    ## ---------- MAP + BUILDINGS + FLAGS ----------
+    - assets/map/
+    - assets/map/background/
+    - assets/map/buildings/
+    - assets/map/flags/

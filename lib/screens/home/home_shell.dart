@@ -306,6 +306,16 @@ class _MapTabState extends State<MapTab> {
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
+                        if (lesson.experienceLine.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            lesson.experienceLine,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: look.accentColor,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),

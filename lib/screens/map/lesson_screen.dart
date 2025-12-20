@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:language_tutor_app/models/lesson.dart';
 import 'package:language_tutor_app/services/lesson_service.dart';
 import 'package:language_tutor_app/widgets/custom_button.dart';
+import 'package:language_tutor_app/services/ai_check_service.dart';
+
 
 class LessonScreen extends StatefulWidget {
   final String language;
@@ -34,6 +36,12 @@ class _LessonScreenState extends State<LessonScreen> {
   final PageController _pageController = PageController();
   int _currentPage = 0;
   bool _finished = false;
+  int totalXp = 0;
+  String? _aiFeedback; // текст от ИИ для последнего задания
+bool _aiChecking = false; // индикатор "идёт проверка ИИ"
+final AiCheckService _aiService = AiCheckService();
+
+
 
   /// Для multiple_choice: индекс выбранного варианта
   final Map<int, int> _selectedOption = {};
@@ -81,6 +89,7 @@ class _LessonScreenState extends State<LessonScreen> {
   bool _isAnswerCorrect(LessonExercise ex, int index) {
     switch (ex.type) {
       case 'multiple_choice':
+      case 'choose_correct_form':
         final selected = _selectedOption[index];
         return selected != null && selected == ex.correctIndex;
       case 'translate_sentence':
@@ -90,6 +99,7 @@ class _LessonScreenState extends State<LessonScreen> {
         if (user.trim().isEmpty || correct.trim().isEmpty) return false;
         return _normalizeAnswer(user) == _normalizeAnswer(correct);
       case 'reorder_words':
+      case 'sentence_order':
         final words = ex.reorderWords ?? const <String>[];
         final selectedIdx = _reorderSelected[index] ?? const <int>[];
         if (selectedIdx.isEmpty) return false;
@@ -119,6 +129,7 @@ class _LessonScreenState extends State<LessonScreen> {
   String? _correctAnswerText(LessonExercise ex) {
     switch (ex.type) {
       case 'multiple_choice':
+      case 'choose_correct_form':
         if (ex.correctIndex != null &&
             ex.options != null &&
             ex.correctIndex! >= 0 &&
@@ -132,6 +143,7 @@ class _LessonScreenState extends State<LessonScreen> {
             ? ex.correctAnswer
             : null;
       case 'reorder_words':
+      case 'sentence_order':
         final correct = ex.reorderCorrect;
         if (correct == null || correct.isEmpty) return null;
         return correct.join(' ');
@@ -188,6 +200,7 @@ class _LessonScreenState extends State<LessonScreen> {
 
     switch (ex.type) {
       case 'multiple_choice':
+      case 'choose_correct_form':
         if (_selectedOption[index] == null) return;
         break;
       case 'translate_sentence':
@@ -196,6 +209,7 @@ class _LessonScreenState extends State<LessonScreen> {
         if (ans.isEmpty) return;
         break;
       case 'reorder_words':
+      case 'sentence_order':
         final order = _reorderSelected[index] ?? const <int>[];
         if (order.isEmpty) return;
         break;
@@ -208,6 +222,48 @@ class _LessonScreenState extends State<LessonScreen> {
       _results[index] = _isAnswerCorrect(ex, index);
     });
   }
+
+  Future<void> _checkWithAI(int index) async {
+  final ex = _content!.exercises[index];
+  final needsTextAnswer = ex.type == 'translate_sentence' ||
+      ex.type == 'fill_in_blank' ||
+      ex.type == 'open_answer';
+  final userAnswer = needsTextAnswer ? (_textAnswers[index] ?? '') : '';
+
+  setState(() {
+    _aiChecking = true;
+    _aiFeedback = null;
+  });
+
+  try {
+    final result = await _aiService.checkAnswer(
+      exerciseType: ex.type,
+      question: ex.question,
+      userAnswer: userAnswer,
+      correctAnswer: ex.correctAnswer,
+      sampleAnswer: ex.sampleAnswer,
+      evaluationCriteria: ex.evaluationCriteria,
+      language: widget.language,
+    );
+
+    setState(() {
+      _aiFeedback = result.feedback;
+      totalXp += result.score; // начисляем баллы ИИ
+      _checked.add(index);
+      _results[index] = result.isCorrect;
+    });
+  } catch (e) {
+    debugPrint("AI CHECK FAILED: $e");
+    setState(() {
+      _aiFeedback = "Не удалось проверить ответ. Попробуйте ещё раз.";
+    });
+  } finally {
+    setState(() {
+      _aiChecking = false;
+    });
+  }
+}
+
 
   @override
   Widget build(BuildContext context) {
@@ -268,6 +324,11 @@ class _LessonScreenState extends State<LessonScreen> {
                               final checked = _checked.contains(exIndex);
                               final isCorrect =
                                   checked && (_results[exIndex] ?? false);
+                              final theme = Theme.of(context);
+                              final cardSurfaceColor =
+                                  theme.brightness == Brightness.dark
+                                      ? Colors.black.withOpacity(0.55)
+                                      : Colors.white.withOpacity(0.92);
 
                               return AnimatedPadding(
                                 duration: const Duration(milliseconds: 220),
@@ -296,240 +357,332 @@ class _LessonScreenState extends State<LessonScreen> {
                                       ),
                                     ],
                                   ),
-                                  padding: const EdgeInsets.all(16),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Упражнение ${exIndex + 1}/${content.exercises.length}',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .labelMedium
-                                            ?.copyWith(
-                                              color: Colors.grey.shade700,
+                                  padding: EdgeInsets.zero,
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(18),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(16),
+                                      color: cardSurfaceColor,
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            'Упражнение ${exIndex + 1}/${content.exercises.length}',
+                                            style: theme.textTheme.labelMedium
+                                                ?.copyWith(
+                                              color: Colors.grey.shade800,
                                               fontWeight: FontWeight.w600,
                                             ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      if (ex.instruction != null &&
-                                          ex.instruction!
-                                              .trim()
-                                              .isNotEmpty) ...[
-                                        Text(
-                                          ex.instruction!,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
-                                                color: Colors.grey.shade700,
+                                          ),
+                                          const SizedBox(height: 8),
+                                          if (ex.instruction != null &&
+                                              ex.instruction!
+                                                  .trim()
+                                                  .isNotEmpty) ...[
+                                            Text(
+                                              ex.instruction!,
+                                              style: theme
+                                                  .textTheme.bodySmall
+                                                  ?.copyWith(
+                                                color: Colors.grey.shade800,
                                                 fontStyle: FontStyle.italic,
                                               ),
-                                        ),
-                                        const SizedBox(height: 6),
-                                      ],
-                                      Text(
-                                        ex.question,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleMedium
-                                            ?.copyWith(
+                                            ),
+                                            const SizedBox(height: 6),
+                                          ],
+                                          Text(
+                                            ex.question,
+                                            style: theme.textTheme.titleMedium
+                                                ?.copyWith(
                                               fontWeight: FontWeight.w600,
                                             ),
-                                      ),
-                                      if (ex.type == 'fill_in_blank' &&
-                                          ex.sentenceWithGap != null) ...[
-                                        const SizedBox(height: 8),
-                                        Container(
-                                          padding: const EdgeInsets.all(12),
-                                          decoration: BoxDecoration(
-                                            color: Colors.grey.shade100,
-                                            borderRadius:
-                                                BorderRadius.circular(12),
                                           ),
-                                          child: Text(
-                                            _buildSentenceWithGap(ex),
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodyMedium,
-                                          ),
-                                        ),
-                                      ],
-                                      const SizedBox(height: 12),
-                                      if (ex.type == 'multiple_choice' &&
-                                          ex.options != null) ...[
-                                        ...List.generate(ex.options!.length,
-                                            (i) {
-                                          return RadioListTile<int>(
-                                            value: i,
-                                            groupValue: selected,
-                                            activeColor: Theme.of(context)
-                                                .colorScheme
-                                                .primary,
-                                            title: Text(ex.options![i]),
-                                            onChanged: (val) {
-                                              setState(() {
-                                                _selectedOption[exIndex] = val!;
-                                              });
-                                            },
-                                          );
-                                        }),
-                                      ] else if (ex.type ==
-                                          'translate_sentence') ...[
-                                        TextFormField(
-                                          initialValue:
-                                              _textAnswers[exIndex] ?? '',
-                                          maxLines: 3,
-                                          decoration: const InputDecoration(
-                                            hintText: 'Введите перевод',
-                                            border: OutlineInputBorder(),
-                                            filled: true,
-                                          ),
-                                          onChanged: (value) {
-                                            setState(() {
-                                              _textAnswers[exIndex] = value;
-                                            });
-                                          },
-                                        ),
-                                      ] else if (ex.type ==
-                                          'fill_in_blank') ...[
-                                        TextFormField(
-                                          initialValue:
-                                              _textAnswers[exIndex] ?? '',
-                                          maxLines: 1,
-                                          decoration: const InputDecoration(
-                                            hintText:
-                                                'Введите пропущенное слово',
-                                            border: OutlineInputBorder(),
-                                            filled: true,
-                                          ),
-                                          onChanged: (value) {
-                                            setState(() {
-                                              _textAnswers[exIndex] = value;
-                                            });
-                                          },
-                                        ),
-                                        if (ex.explanation
-                                            .trim()
-                                            .isNotEmpty) ...[
-                                          const SizedBox(height: 8),
-                                          Text(
-                                            ex.explanation,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(
-                                                    color:
-                                                        Colors.grey.shade700),
-                                          ),
-                                        ],
-                                      ] else if (ex.type == 'reorder_words' &&
-                                          ex.reorderWords != null) ...[
-                                        Text(
-                                          'Нажмите по словам в нужном порядке:',
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
-                                                color: Colors.grey,
+                                          if (ex.type == 'fill_in_blank' &&
+                                              ex.sentenceWithGap != null) ...[
+                                            const SizedBox(height: 8),
+                                            Container(
+                                              padding: const EdgeInsets.all(12),
+                                              decoration: BoxDecoration(
+                                                color: theme.brightness ==
+                                                        Brightness.dark
+                                                    ? Colors.black
+                                                        .withOpacity(0.25)
+                                                    : Colors.grey.shade100,
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
                                               ),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Wrap(
-                                          spacing: 8,
-                                          runSpacing: 8,
-                                          children: List.generate(
-                                              ex.reorderWords!.length, (i) {
-                                            final current =
-                                                _reorderSelected[exIndex] ??
-                                                    <int>[];
-                                            final isSelected =
-                                                current.contains(i);
-                                            final word = ex.reorderWords![i];
-
-                                            return ChoiceChip(
-                                              label: Text(word),
-                                              selected: isSelected,
-                                              onSelected: (_) {
+                                              child: Text(
+                                                _buildSentenceWithGap(ex),
+                                                style: theme
+                                                    .textTheme.bodyMedium,
+                                              ),
+                                            ),
+                                          ],
+                                          const SizedBox(height: 12),
+                                          if ((ex.type == 'multiple_choice' ||
+                                                  ex.type ==
+                                                      'choose_correct_form') &&
+                                              ex.options != null) ...[
+                                            ...List.generate(
+                                              ex.options!.length,
+                                              (i) => RadioListTile<int>(
+                                                value: i,
+                                                groupValue: selected,
+                                                activeColor:
+                                                    theme.colorScheme.primary,
+                                                title: Text(ex.options![i]),
+                                                onChanged: (val) {
+                                                  setState(() {
+                                                    _selectedOption[exIndex] =
+                                                        val!;
+                                                  });
+                                                },
+                                              ),
+                                            ),
+                                          ] else if (ex.type ==
+                                              'translate_sentence') ...[
+                                            TextFormField(
+                                              initialValue:
+                                                  _textAnswers[exIndex] ?? '',
+                                              maxLines: 3,
+                                              decoration:
+                                                  const InputDecoration(
+                                                hintText: 'Введите перевод',
+                                                border: OutlineInputBorder(),
+                                                filled: true,
+                                              ),
+                                              onChanged: (value) {
                                                 setState(() {
-                                                  final updated =
-                                                      List<int>.from(current);
-                                                  if (isSelected) {
-                                                    updated.remove(i);
-                                                  } else if (!updated
-                                                      .contains(i)) {
-                                                    updated.add(i);
-                                                  }
-                                                  _reorderSelected[exIndex] =
-                                                      updated;
+                                                  _textAnswers[exIndex] =
+                                                      value;
                                                 });
                                               },
-                                            );
-                                          }),
-                                        ),
-                                        if ((_reorderSelected[exIndex] ??
-                                                const <int>[])
-                                            .isNotEmpty) ...[
-                                          const SizedBox(height: 8),
-                                          Text(
-                                            (_reorderSelected[exIndex] ??
-                                                    const <int>[])
-                                                .map((i) => ex.reorderWords![i])
-                                                .join(' '),
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodyMedium,
-                                          ),
-                                        ],
-                                      ],
-                                      const SizedBox(height: 12),
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          ElevatedButton.icon(
-                                            onPressed: () =>
-                                                _checkQuestion(exIndex),
-                                            icon: const Icon(Icons.check),
-                                            label: const Text('Проверить'),
-                                          ),
-                                          if (checked)
-                                            Icon(
-                                              isCorrect
-                                                  ? Icons.check_circle
-                                                  : Icons.cancel_outlined,
-                                              color: isCorrect
-                                                  ? Colors.green
-                                                  : Colors.red,
                                             ),
-                                        ],
-                                      ),
-                                      if (checked) ...[
-                                        const SizedBox(height: 10),
-                                        Text(
-                                          ex.explanation,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
+                                          ] else if (ex.type ==
+                                              'fill_in_blank') ...[
+                                            TextFormField(
+                                              initialValue:
+                                                  _textAnswers[exIndex] ?? '',
+                                              maxLines: 1,
+                                              decoration:
+                                                  const InputDecoration(
+                                                hintText:
+                                                    'Введите пропущенное слово',
+                                                border: OutlineInputBorder(),
+                                                filled: true,
+                                              ),
+                                              onChanged: (value) {
+                                                setState(() {
+                                                  _textAnswers[exIndex] =
+                                                      value;
+                                                });
+                                              },
+                                            ),
+                                            if (ex.explanation
+                                                .trim()
+                                                .isNotEmpty) ...[
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                ex.explanation,
+                                                style: theme
+                                                    .textTheme.bodySmall
+                                                    ?.copyWith(
+                                                  color: Colors.grey.shade700,
+                                                ),
+                                              ),
+                                            ],
+                                          ] else if (ex.type ==
+                                              'open_answer') ...[
+                                            TextFormField(
+                                              initialValue:
+                                                  _textAnswers[exIndex] ?? '',
+                                              maxLines: 5,
+                                              decoration:
+                                                  const InputDecoration(
+                                                hintText:
+                                                    'Опишите ответ в свободной форме',
+                                                border: OutlineInputBorder(),
+                                                filled: true,
+                                              ),
+                                              onChanged: (value) {
+                                                setState(() {
+                                                  _textAnswers[exIndex] =
+                                                      value;
+                                                });
+                                              },
+                                            ),
+                                            if (ex.sampleAnswer != null &&
+                                                ex.sampleAnswer!
+                                                    .trim()
+                                                    .isNotEmpty) ...[
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                'Пример ответа: ${ex.sampleAnswer}',
+                                                style: theme
+                                                    .textTheme.bodySmall
+                                                    ?.copyWith(
+                                                  color: Colors.grey.shade700,
+                                                  fontStyle: FontStyle.italic,
+                                                ),
+                                              ),
+                                            ],
+                                          ] else if ((ex.type ==
+                                                      'reorder_words' ||
+                                                  ex.type ==
+                                                      'sentence_order') &&
+                                              ex.reorderWords != null) ...[
+                                            Text(
+                                              'Нажмите по словам в нужном порядке:',
+                                              style: theme.textTheme.bodySmall
+                                                  ?.copyWith(
+                                                color: Colors.grey,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Wrap(
+                                              spacing: 8,
+                                              runSpacing: 8,
+                                              children: List.generate(
+                                                ex.reorderWords!.length,
+                                                (i) {
+                                                  final current =
+                                                      _reorderSelected[
+                                                              exIndex] ??
+                                                          <int>[];
+                                                  final isSelected =
+                                                      current.contains(i);
+                                                  final word =
+                                                      ex.reorderWords![i];
+
+                                                  return ChoiceChip(
+                                                    label: Text(word),
+                                                    selected: isSelected,
+                                                    onSelected: (_) {
+                                                      setState(() {
+                                                        final updated =
+                                                            List<int>.from(
+                                                                current);
+                                                        if (isSelected) {
+                                                          updated.remove(i);
+                                                        } else if (!updated
+                                                            .contains(i)) {
+                                                          updated.add(i);
+                                                        }
+                                                        _reorderSelected[
+                                                                exIndex] =
+                                                            updated;
+                                                      });
+                                                    },
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                            if ((_reorderSelected[exIndex] ??
+                                                    const <int>[])
+                                                .isNotEmpty) ...[
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                (_reorderSelected[exIndex] ??
+                                                        const <int>[])
+                                                    .map((i) =>
+                                                        ex.reorderWords![i])
+                                                    .join(' '),
+                                                style: theme
+                                                    .textTheme.bodyMedium,
+                                              ),
+                                            ],
+                                          ],
+                                          const SizedBox(height: 12),
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment
+                                                    .spaceBetween,
+                                            children: [
+                                              ElevatedButton.icon(
+                                                onPressed: () {
+                                                  if (_aiChecking) return;
+
+                                                  if (ex.type ==
+                                                          'translate_sentence' ||
+                                                      ex.type ==
+                                                          'open_answer') {
+                                                    if ((_textAnswers[
+                                                                    exIndex] ??
+                                                                '')
+                                                            .trim()
+                                                            .isEmpty) {
+                                                      return;
+                                                    }
+                                                    _checkWithAI(exIndex);
+                                                    return;
+                                                  }
+
+                                                  _checkQuestion(exIndex);
+
+                                                  if (_results[exIndex] ==
+                                                      true) {
+                                                    setState(
+                                                        () => totalXp += 10);
+                                                  }
+                                                },
+                                                icon:
+                                                    const Icon(Icons.check),
+                                                label:
+                                                    const Text('Проверить'),
+                                              ),
+                                              if (checked)
+                                                Icon(
+                                                  isCorrect
+                                                      ? Icons.check_circle
+                                                      : Icons
+                                                          .cancel_outlined,
+                                                  color: isCorrect
+                                                      ? Colors.green
+                                                      : Colors.red,
+                                                ),
+                                            ],
+                                          ),
+                                          if (_aiFeedback != null) ...[
+                                            const SizedBox(height: 10),
+                                            Text(
+                                              _aiFeedback!,
+                                              style: theme
+                                                  .textTheme.bodySmall
+                                                  ?.copyWith(
+                                                color: Colors.blueGrey,
+                                                fontStyle: FontStyle.italic,
+                                              ),
+                                            ),
+                                          ],
+                                          if (checked) ...[
+                                            const SizedBox(height: 10),
+                                            Text(
+                                              ex.explanation,
+                                              style: theme
+                                                  .textTheme.bodySmall
+                                                  ?.copyWith(
                                                 color: Colors.grey.shade700,
                                               ),
-                                        ),
-                                        if (!isCorrect) ...[
-                                          const SizedBox(height: 6),
-                                          Text(
-                                            'Правильный ответ: ${_correctAnswerText(ex) ?? '—'}',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(
-                                                    color: Colors.grey.shade800,
-                                                    fontWeight:
-                                                        FontWeight.w600),
-                                          ),
+                                            ),
+                                            if (!isCorrect) ...[
+                                              const SizedBox(height: 6),
+                                              Text(
+                                                'Правильный ответ: ${_correctAnswerText(ex) ?? '—'}',
+                                                style: theme
+                                                    .textTheme.bodySmall
+                                                    ?.copyWith(
+                                                  color:
+                                                      Colors.grey.shade800,
+                                                  fontWeight:
+                                                      FontWeight.w600,
+                                                ),
+                                              ),
+                                            ],
+                                          ],
                                         ],
-                                      ],
-                                    ],
+                                      ),
+                                    ),
                                   ),
                                 ),
                               );
@@ -567,16 +720,31 @@ class _LessonScreenState extends State<LessonScreen> {
   }
 
   void _goNextPage() {
-    final content = _content;
-    if (content == null) return;
-    final total = content.exercises.length + 1;
-    if (_currentPage < total - 1) {
-      _pageController.nextPage(
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeInOut,
-      );
-    }
+  final content = _content;
+  if (content == null) return;
+
+  final totalPages = content.exercises.length + 1;
+
+  // если это не последняя страница
+  if (_currentPage < totalPages - 1) {
+    _pageController
+        .nextPage(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+        )
+        .then((_) {
+      // После перехода страница уже обновится
+      final isBossPage = _currentPage == content.exercises.length;
+
+      if (isBossPage) {
+        setState(() {
+          totalXp = (totalXp * 1.5).round();  // множитель XP
+        });
+      }
+    });
   }
+}
+
 
   void _goPrevPage() {
     if (_currentPage > 0) {
@@ -606,7 +774,10 @@ class _LessonScreenState extends State<LessonScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         title: const Text('Отлично!'),
         content: Text(
-            'Вы завершили урок.\nВыполнено заданий: $completed из $total.'),
+  'Вы завершили урок.\n'
+  'Выполнено: $completed из $total.\n'
+  'Получено XP: $totalXp.'
+),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
@@ -635,14 +806,7 @@ class _LessonIntroCard extends StatelessWidget {
 
     return Container(
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            theme.colorScheme.primary.withOpacity(0.12),
-            Colors.white,
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(

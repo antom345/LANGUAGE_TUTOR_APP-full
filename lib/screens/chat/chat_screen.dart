@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -9,11 +8,14 @@ import 'package:record/record.dart';
 
 import 'package:language_tutor_app/models/character.dart';
 import 'package:language_tutor_app/models/message.dart';
+import 'package:language_tutor_app/providers/situation_provider.dart';
 import 'package:language_tutor_app/screens/chat/chat_controller.dart';
+import 'package:language_tutor_app/screens/chat/situation_screen.dart';
 import 'package:language_tutor_app/ui/theme/app_theme.dart';
 import 'package:language_tutor_app/ui/widgets/app_scaffold.dart';
 import 'package:language_tutor_app/widgets/character_avatar.dart';
 import 'package:language_tutor_app/services/character_service.dart';
+import 'package:provider/provider.dart';
 
 class ChatViewController {
   _ChatViewState? _state;
@@ -167,10 +169,8 @@ class _ChatViewState extends State<ChatView> {
   final TextEditingController _inputController = TextEditingController();
   bool _isSending = false;
   final List<SavedWord> _savedWords = [];
-  final AudioPlayer _audioPlayer = AudioPlayer();
-  final Queue<String> _ttsQueue = Queue<String>();
-  bool _isTtsPlaying = false;
-  StreamSubscription<void>? _playerCompleteSub;
+  late final AudioPlayer _audioPlayer;
+  Future<void> _playChain = Future.value();
 
   final AudioRecorder _audioRecorder = AudioRecorder();
   bool _isRecording = false;
@@ -183,6 +183,10 @@ class _ChatViewState extends State<ChatView> {
 
   late final ChatController _chatController;
   bool _sentInitialRequest = false;
+  bool _openingSituation = false;
+  int _lastSituationRevision = -1;
+  late final String _languageCode;
+  String _lastSituationFingerprint = '';
 
   CharacterLook get _characterLook =>
       characterLookFor(widget.partnerLanguage, widget.partnerGender);
@@ -191,6 +195,8 @@ class _ChatViewState extends State<ChatView> {
   void initState() {
     super.initState();
     widget.controller?._attach(this);
+    _audioPlayer = AudioPlayer();
+    _languageCode = _languageCodeFromName(widget.learningLanguage);
     _chatController = ChatController(
       language: widget.learningLanguage,
       level: widget.level,
@@ -199,51 +205,30 @@ class _ChatViewState extends State<ChatView> {
       userAge: widget.userAge,
       partnerGender: widget.partnerGender,
     );
-    _playerCompleteSub =
-        _audioPlayer.onPlayerComplete.listen((_) => _handlePlaybackComplete());
+    final provider = context.read<SituationProvider>();
+    _lastSituationRevision = provider.revision;
+    _lastSituationFingerprint = _currentSituationFingerprint(provider);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _promptSituationIfNeeded();
+    });
     _startConversation();
   }
 
-  Future<bool> _playTtsFromUrl(String url) async {
-    if (url.isEmpty) {
-      debugPrint('TTS: empty url, skip');
-      return false;
-    }
-
-    try {
-      await _audioPlayer.stop();
-      await _audioPlayer.play(UrlSource(url));
-      return true;
-    } catch (e) {
-      debugPrint('TTS play error: $e');
-      return false;
-    }
-  }
-
-  void _enqueueTtsUrl(String url) {
+  void _playTtsUrl(String url, {required DateTime enqueuedAt}) {
     if (url.isEmpty) return;
-    _ttsQueue.add(url);
-    if (!_isTtsPlaying) {
-      unawaited(_playNextQueued());
-    }
-  }
-
-  Future<void> _playNextQueued() async {
-    if (_isTtsPlaying || _ttsQueue.isEmpty) return;
-    final nextUrl = _ttsQueue.removeFirst();
-    _isTtsPlaying = true;
-    final ok = await _playTtsFromUrl(nextUrl);
-    if (!ok) {
-      _isTtsPlaying = false;
-      await _playNextQueued();
-    }
-  }
-
-  void _handlePlaybackComplete() {
-    _isTtsPlaying = false;
-    if (_ttsQueue.isNotEmpty) {
-      unawaited(_playNextQueued());
-    }
+    _playChain = _playChain.then((_) async {
+      try {
+        await _audioPlayer.stop();
+        final playCallStarted = DateTime.now();
+        debugPrint(
+          '[PERF] play call ms: ${playCallStarted.difference(enqueuedAt).inMilliseconds}',
+        );
+        // fire-and-forget start; stop already awaited to prevent overlap
+        unawaited(_audioPlayer.play(UrlSource(url)));
+      } catch (e) {
+        debugPrint('TTS play error: $e');
+      }
+    });
   }
 
   Future<void> _speakAssistantReply(String text) async {
@@ -251,13 +236,17 @@ class _ChatViewState extends State<ChatView> {
     if (normalized.isEmpty) return;
 
     try {
+      final ttsStarted = DateTime.now();
       final audioUrl = await _chatController.fetchMessageTtsUrl(normalized);
+      debugPrint(
+        '[PERF] tts ms: ${DateTime.now().difference(ttsStarted).inMilliseconds}',
+      );
       if (audioUrl == null || audioUrl.isEmpty) {
         return;
       }
 
       if (!mounted) return;
-      _enqueueTtsUrl(audioUrl);
+      _playTtsUrl(audioUrl, enqueuedAt: DateTime.now());
     } catch (e, st) {
       debugPrint('Auto TTS error: $e\n$st');
     }
@@ -267,11 +256,80 @@ class _ChatViewState extends State<ChatView> {
   void dispose() {
     widget.controller?._detach(this);
     _inputController.dispose();
-    _playerCompleteSub?.cancel();
     _audioPlayer.dispose();
     _audioRecorder.dispose();
     _recordingTimeoutTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final situationState = Provider.of<SituationProvider>(context);
+    if (_lastSituationRevision != situationState.revision) {
+      _lastSituationRevision = situationState.revision;
+      _handleSituationChanged();
+    }
+  }
+
+  Future<void> _promptSituationIfNeeded() async {
+    if (!mounted) return;
+    final hasSituation =
+        context.read<SituationProvider>().hasSituation(_languageCode);
+    if (!hasSituation) {
+      await _openSituationEditor();
+    }
+  }
+
+  Future<void> _openSituationEditor() async {
+    if (_openingSituation || !mounted) return;
+    _openingSituation = true;
+    try {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          fullscreenDialog: false,
+          builder: (_) => SituationScreen(
+            language: widget.learningLanguage,
+            languageCode: _languageCode,
+            level: widget.level,
+            character: partnerNameForLanguage(widget.partnerLanguage),
+            topic: widget.topic,
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        _openingSituation = false;
+      }
+    }
+  }
+
+  void _handleSituationChanged() {
+    final provider = context.read<SituationProvider>();
+    final fingerprint = _currentSituationFingerprint(provider);
+    if (fingerprint == _lastSituationFingerprint) {
+      return;
+    }
+    _lastSituationFingerprint = fingerprint;
+    if (_messages.isNotEmpty || _isSending) {
+      setState(() {
+        _messages.clear();
+        _isSending = false;
+      });
+    }
+    _sentInitialRequest = false;
+  }
+
+  Future<void> _resetSituation() async {
+    context.read<SituationProvider>().reset(_languageCode);
+    _handleSituationChanged();
+    await _openSituationEditor();
+  }
+
+  String _currentSituationFingerprint(SituationProvider provider) {
+    final situation = provider.getSituation(_languageCode);
+    if (situation == null) return 'none';
+    return situation.toJson().toString();
   }
 
   Future<void> _startConversation() async {
@@ -310,7 +368,17 @@ class _ChatViewState extends State<ChatView> {
     });
 
     try {
-      final data = await _chatController.sendChat(_messages, initial: initial);
+      final chatStarted = DateTime.now();
+      final situation =
+          context.read<SituationProvider>().getSituation(_languageCode);
+      final data = await _chatController.sendChat(
+        _messages,
+        initial: initial,
+        situation: situation,
+      );
+      debugPrint(
+        '[PERF] chat ms: ${DateTime.now().difference(chatStarted).inMilliseconds}',
+      );
       final reply = data.reply;
       final correctionsText = data.correctionsText ?? '';
       String? assistantReplyForTts;
@@ -598,7 +666,7 @@ class _ChatViewState extends State<ChatView> {
                         });
                       }
 
-                      _enqueueTtsUrl(audioUrl!);
+                      _playTtsUrl(audioUrl!, enqueuedAt: DateTime.now());
                     },
                   ),
                   IconButton(
@@ -665,6 +733,7 @@ class _ChatViewState extends State<ChatView> {
   @override
   Widget build(BuildContext context) {
     final partnerName = partnerNameForLanguage(widget.partnerLanguage);
+    final situationState = context.watch<SituationProvider>();
     return SafeArea(
       child: Column(
         children: [
@@ -699,8 +768,109 @@ class _ChatViewState extends State<ChatView> {
                 ],
               ),
             ),
+          _buildSituationStrip(situationState),
           Expanded(child: _buildChatArea()),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSituationStrip(SituationProvider provider) {
+    final accent = _characterLook.accentColor;
+    final situation = provider.getSituation(_languageCode);
+    if (situation == null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(AppRadius.radiusLarge),
+            border: Border.all(color: accent.withOpacity(0.26)),
+            boxShadow: AppShadows.card,
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, color: accent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Чат без ситуации. Добавьте задачу диалога для ${widget.learningLanguage}?',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(color: Colors.black87),
+                ),
+              ),
+              const SizedBox(width: 12),
+              TextButton(
+                onPressed: _openSituationEditor,
+                child: const Text('Задать'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(AppRadius.radiusLarge),
+          border: Border.all(color: accent.withOpacity(0.26)),
+          boxShadow: AppShadows.card,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.map_outlined, color: accent),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Ситуация',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    situation.shortSummary(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(color: Colors.black87),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: _openSituationEditor,
+                  child: const Text('Изменить'),
+                ),
+                TextButton(
+                  onPressed: _resetSituation,
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.redAccent,
+                  ),
+                  child: const Text('Сбросить'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -977,5 +1147,26 @@ String partnerNameForLanguage(String language) {
       return 'Kim';
     default:
       return 'Michael';
+  }
+}
+
+String _languageCodeFromName(String language) {
+  switch (language) {
+    case 'English':
+      return 'en';
+    case 'German':
+      return 'de';
+    case 'French':
+      return 'fr';
+    case 'Spanish':
+      return 'es';
+    case 'Italian':
+      return 'it';
+    case 'Korean':
+      return 'ko';
+    case 'Russian':
+      return 'ru';
+    default:
+      return 'en';
   }
 }
