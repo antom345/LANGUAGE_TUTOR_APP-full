@@ -1,7 +1,7 @@
 import asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
@@ -97,47 +97,72 @@ def normalize_lang_code(language: str) -> str:
 
 def synthesize_tts_piper(text: str, model_path: str) -> bytes:
     """
-    Синтез через бинарник Piper с выводом во временный wav.
+    Piper -> WAV (temp) -> MP3 (ffmpeg).
+    Возвращает MP3 bytes.
     """
     import tempfile
+    import subprocess
+    import os
 
     PIPER_BIN = "/workspace/langapp/piper_bin/piper/piper"
+
     if not os.path.exists(PIPER_BIN):
         raise RuntimeError(f"piper binary not found: {PIPER_BIN}")
-    if not model_path or not os.path.exists(model_path):
+    if not os.path.exists(model_path):
         raise RuntimeError(f"piper model not found: {model_path}")
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        out_wav = f.name
+        wav_path = f.name
+
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        mp3_path = f.name
 
     try:
+        # 1️⃣ Piper -> WAV
         proc = subprocess.run(
-            [PIPER_BIN, "--model", model_path, "--output_file", out_wav],
+            [PIPER_BIN, "--model", model_path, "--output_file", wav_path],
             input=text.encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=False,
             env=os.environ.copy(),
         )
 
         if proc.returncode != 0:
-            stderr_preview = proc.stderr.decode("utf-8", "ignore")[:2000]
-            raise RuntimeError(
-                f"piper failed rc={proc.returncode}, stderr={stderr_preview}"
-            )
+            raise RuntimeError(proc.stderr.decode("utf-8", "ignore")[:1000])
 
-        with open(out_wav, "rb") as rf:
-            audio = rf.read()
+        if not os.path.exists(wav_path) or os.path.getsize(wav_path) < 200:
+            raise RuntimeError("piper produced empty wav")
 
-        if not audio or len(audio) < 200:
-            raise RuntimeError("piper produced empty/too small wav")
+        # 2️⃣ WAV -> MP3 (ffmpeg из workspace)
+        proc2 = subprocess.run(
+            [
+                FFMPEG_BIN,
+                "-y",
+                "-i", wav_path,
+                "-codec:a", "libmp3lame",
+                "-b:a", "64k",
+                mp3_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-        return audio
+        if proc2.returncode != 0:
+            raise RuntimeError(proc2.stderr.decode("utf-8", "ignore")[:1000])
+
+        if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) < 200:
+            raise RuntimeError("ffmpeg produced empty mp3")
+
+        with open(mp3_path, "rb") as f:
+            return f.read()
+
     finally:
-        try:
-            os.remove(out_wav)
-        except Exception:
-            pass
+        for p in (wav_path, mp3_path):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
 
 
 def synthesize_with_piper(text: str, language: str, voice: Optional[str] = None) -> bytes:
@@ -178,7 +203,7 @@ def _build_tts_cache_filename(
 ) -> str:
     cache_key_raw = f"{voice or ''}|{sample_rate or ''}|{language or ''}|{text}"
     cache_key = hashlib.sha1(cache_key_raw.encode("utf-8")).hexdigest()
-    return f"{cache_key}.wav"
+    return f"{cache_key}.mp3"
 
 
 def _ensure_cached_tts_file(
@@ -229,6 +254,9 @@ except Exception:
 AUDIO_CACHE_DIR = Path(os.getenv("AUDIO_CACHE_DIR", "/workspace/langapp/audio_cache"))
 AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 AUDIO_BASE_URL = os.getenv("AUDIO_BASE_URL", "https://api.languagetutorapp.org").rstrip("/")
+
+FFMPEG_BIN = os.getenv("FFMPEG_BIN", "/workspace/langapp/tools/ffmpeg/ffmpeg")
+
 
 BACKEND_HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
@@ -698,11 +726,21 @@ LLM_HTTP = httpx.Client(
     headers=_llm_headers(),
 )
 
+LLM_HTTP_ASYNC = httpx.AsyncClient(
+    timeout=LLM_TIMEOUT,
+    trust_env=False,
+    headers=_llm_headers(),
+)
+
 
 @app.on_event("shutdown")
-def _shutdown():
+async def _shutdown():
     try:
         LLM_HTTP.close()
+    except Exception:
+        pass
+    try:
+        await LLM_HTTP_ASYNC.aclose()
     except Exception:
         pass
 
@@ -763,6 +801,130 @@ def _parse_textual_reply(content: str) -> Dict[str, str]:
         "reply": reply,
         "corrections_text": corrections,
     }
+
+
+def _build_chat_request_from_payload(payload: dict) -> ChatRequest:
+    if "messages" in payload:
+        return ChatRequest(**payload)
+
+    if "message" in payload:
+        student_text = payload.get("message", "")
+        if not student_text:
+            raise HTTPException(status_code=422, detail="Empty 'message'")
+
+        return ChatRequest(
+            messages=[ChatMessage(role="user", content=student_text)],
+            language=payload.get("language", "English"),
+            level=payload.get("level", "B1"),
+            character=payload.get("character", "Michael"),
+            topic=payload.get("topic", "general"),
+        )
+
+    if "student_message" in payload:
+        legacy = LegacyChatRequest(**payload)
+        student_text = legacy.student_message
+        if not student_text:
+            raise HTTPException(status_code=422, detail="Empty 'student_message'")
+
+        return ChatRequest(
+            messages=[ChatMessage(role="user", content=student_text)],
+            language=legacy.language,
+            level=getattr(legacy, "level", None) or "B1",
+            character=getattr(legacy, "character", None) or "Michael",
+            topic="general",
+        )
+
+    raise HTTPException(
+        status_code=422,
+        detail="Unsupported request format: need 'messages' or 'message' or 'student_message'",
+    )
+
+
+def _prepare_chat_messages(
+    req: ChatRequest,
+) -> tuple[str, List[Dict[str, str]], bool, bool]:
+    partner_name = (req.character or "").strip() or get_partner_name(
+        req.language,
+        req.partner_gender or "female",
+    )
+    system_prompt = build_system_prompt(
+        language=req.language,
+        level=req.level,
+        topic=req.topic,
+        partner_gender=req.partner_gender,
+        partner_name=partner_name,
+        situation=req.situation,
+    )
+
+    history_messages = [
+        {"role": msg.role, "content": msg.content}
+        for msg in req.messages
+    ]
+    history_messages = history_messages[-5:]
+
+    has_user_message = any(msg.role == "user" for msg in req.messages)
+    last_message_from_user = bool(req.messages and req.messages[-1].role == "user")
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history_messages)
+
+    logger.info("[CHAT] situation present: %s", "yes" if req.situation else "no")
+    return partner_name, messages, has_user_message, last_message_from_user
+
+
+def _format_sse(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _extract_json_string_field(raw_text: str, field: str) -> tuple[str, bool]:
+    """
+    Пытаемся вынуть значение строкового поля из частичного JSON.
+    Возвращает (значение, найден_закрывающий_кавычки).
+    """
+    marker = f'"{field}"'
+    start_idx = raw_text.find(marker)
+    if start_idx == -1:
+        return "", False
+
+    colon_idx = raw_text.find(":", start_idx + len(marker))
+    if colon_idx == -1:
+        return "", False
+
+    quote_idx = raw_text.find('"', colon_idx)
+    if quote_idx == -1:
+        return "", False
+
+    buf: list[str] = []
+    escaped = False
+    closed = False
+    for ch in raw_text[quote_idx + 1 :]:
+        if escaped:
+            if ch == "n":
+                buf.append("\n")
+            elif ch == "t":
+                buf.append("\t")
+            elif ch == "r":
+                buf.append("\r")
+            elif ch == '"':
+                buf.append('"')
+            elif ch == "\\":
+                buf.append("\\")
+            else:
+                buf.append(ch)
+            escaped = False
+            continue
+
+        if ch == "\\":
+            escaped = True
+            continue
+
+        if ch == '"':
+            closed = True
+            break
+
+        buf.append(ch)
+
+    return "".join(buf), closed
 
 
 def llm_chat_completion(
@@ -888,11 +1050,15 @@ Goals:
 - Encourage dialogue with occasional brief follow-up questions.
 
 Error correction:
-- Correct only the learner's last user message; ignore assistant messages.
+- Correct only the learner's LAST user message; ignore assistant/system/your own messages.
+- Preserve the user's meaning: do NOT change intent, nouns, key phrases, or add/remove information.
+- Fix only grammar, spelling/typos, word form/choice, and word order. Avoid style rewrites or tone changes.
+- If something is unclear, do minimal fixes and keep the original wording; do not guess new meaning.
 - First give the corrected version, then a short plain-language note on the fix.
-- Focus on grammar, word choice, and word order; ignore minor casing/punctuation unless meaning changes.
+- Ignore minor casing/punctuation unless meaning changes.
 - If there are no real mistakes, leave "corrections_text" empty and do not invent issues.
-- Do not repeat the user's original sentence.
+- Do not repeat the user's original sentence verbatim.
+- If the last message is NOT from the user, leave "corrections_text" empty.
 
 Style:
 - Sound human, not like a textbook or AI; never say you are an AI or language model.
@@ -961,35 +1127,12 @@ def _normalize_situation_from_dict(
 
 def call_llm_chat(req: ChatRequest) -> ChatResponse:
     """Вызов новой LLM для чат-диалога с коррекциями."""
-    partner_name = (req.character or "").strip() or get_partner_name(
-        req.language,
-        req.partner_gender or "female",
-    )
-    system_prompt = build_system_prompt(
-        language=req.language,
-        level=req.level,
-        topic=req.topic,
-        partner_gender=req.partner_gender,
-        partner_name=partner_name,
-        situation=req.situation,
-    )
-
-    history_messages = [
-        {"role": msg.role, "content": msg.content}
-        for msg in req.messages
-    ]
-
-    # Берём только последние 5 сообщений, чтобы экономить токены
-    history_messages = history_messages[-5:]
-
-    # Было ли хотя бы одно сообщение ученика?
-    has_user_message = any(msg.role == "user" for msg in req.messages)
-
-
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history_messages)
-
-    logger.info("[CHAT] situation present: %s", "yes" if req.situation else "no")
+    (
+        partner_name,
+        messages,
+        has_user_message,
+        last_message_from_user,
+    ) = _prepare_chat_messages(req)
 
     content = llm_chat_completion(messages, temperature=0.4)
 
@@ -1012,9 +1155,31 @@ def call_llm_chat(req: ChatRequest) -> ChatResponse:
         reply_text = parsed.get("reply", "").strip()
         corrections_text = parsed.get("corrections_text", "").strip()
 
+    # Если reply содержит corrections_text внутри JSON — достанем и разделим.
+    if "corrections_text" in (reply_text or ""):
+        parsed = _parse_json_content(reply_text)
+        if parsed:
+            embedded_reply = str(parsed.get("reply", "")).strip()
+            embedded_corr = str(parsed.get("corrections_text", "")).strip()
+            if embedded_reply:
+                reply_text = embedded_reply
+            if embedded_corr:
+                corrections_text = corrections_text or embedded_corr
+        else:
+            brace_idx = reply_text.find("{")
+            if brace_idx != -1:
+                before = reply_text[:brace_idx].strip()
+                parsed_brace = _parse_json_content(reply_text[brace_idx:])
+                if before:
+                    reply_text = before
+                if parsed_brace:
+                    embedded_corr = str(parsed_brace.get("corrections_text", "")).strip()
+                    if embedded_corr:
+                        corrections_text = corrections_text or embedded_corr
+
     # Если ученик ещё ни разу не писал (только первое приветствие) —
     # не показываем никаких исправлений
-    if not has_user_message:
+    if not has_user_message or not last_message_from_user:
         corrections_text = ""
 
     if not reply_text:
@@ -1256,6 +1421,136 @@ async def generate_situation_endpoint(req: GenerateSituationRequest):
         )
 
 
+async def _generate_chat_stream(req: ChatRequest):
+    (
+        partner_name,
+        messages,
+        has_user_message,
+        last_message_from_user,
+    ) = _prepare_chat_messages(req)
+
+    payload: Dict[str, Any] = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "stream": True,
+        "options": {
+            "temperature": 0.4,
+        },
+    }
+
+    raw_accumulated = ""
+    reply_so_far = ""
+    corrections_so_far = ""
+    last_llm_piece = ""
+    started_at = time.time()
+
+    try:
+        async with LLM_HTTP_ASYNC.stream(
+            "POST",
+            LLM_CHAT_COMPLETIONS_URL,
+            json=payload,
+        ) as resp:
+            resp.raise_for_status()
+
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except Exception:
+                    logger.exception("[CHAT_STREAM] failed to parse chunk")
+                    continue
+
+                content_piece = (
+                    (data.get("message") or {}).get("content")
+                    or data.get("response")
+                    or ""
+                )
+
+                if not isinstance(content_piece, str):
+                    content_piece = str(content_piece)
+
+                if last_llm_piece and content_piece.startswith(last_llm_piece):
+                    raw_increment = content_piece[len(last_llm_piece) :]
+                else:
+                    raw_increment = content_piece
+
+                raw_accumulated += raw_increment
+                last_llm_piece = content_piece
+
+                reply_candidate, _ = _extract_json_string_field(
+                    raw_accumulated,
+                    "reply",
+                )
+                if not reply_candidate:
+                    reply_candidate = raw_accumulated
+
+                corrections_candidate, corrections_closed = _extract_json_string_field(
+                    raw_accumulated,
+                    "corrections_text",
+                )
+                if corrections_candidate and corrections_closed:
+                    corrections_so_far = corrections_candidate
+
+                if reply_candidate.startswith(reply_so_far):
+                    delta = reply_candidate[len(reply_so_far) :]
+                else:
+                    delta = reply_candidate
+
+                if delta:
+                    reply_so_far = reply_candidate
+                    yield _format_sse("delta", {"delta": delta})
+
+    except httpx.HTTPStatusError as exc:
+        status = getattr(exc.response, "status_code", None) or "unknown"
+        err_msg = f"LLM stream HTTP error {status}"
+        logger.exception("[CHAT_STREAM] http error: %s", err_msg)
+        yield _format_sse("error", {"error": err_msg})
+        return
+    except Exception as exc:
+        logger.exception("[CHAT_STREAM] exception: %s", exc)
+        yield _format_sse("error", {"error": str(exc)})
+        return
+
+    parsed = _parse_json_content(raw_accumulated)
+    if parsed:
+        final_reply = str(parsed.get("reply", reply_so_far)).strip() or reply_so_far
+        final_corrections = str(
+            parsed.get("corrections_text", corrections_so_far)
+        ).strip()
+    else:
+        fallback = _parse_textual_reply(raw_accumulated or reply_so_far)
+        final_reply = (fallback.get("reply") or reply_so_far).strip()
+        final_corrections = (fallback.get("corrections_text") or corrections_so_far).strip()
+
+    if not has_user_message or not last_message_from_user:
+        final_corrections = ""
+
+    if not final_reply:
+        final_reply = "Sorry, something went wrong. Could you write that again?"
+
+    if final_reply.startswith(reply_so_far):
+        remaining = final_reply[len(reply_so_far) :]
+        if remaining:
+            reply_so_far = final_reply
+            yield _format_sse("delta", {"delta": remaining})
+
+    done_payload: Dict[str, Any] = {
+        "done": True,
+        "full_text": final_reply,
+        "partner_name": partner_name,
+    }
+    if final_corrections:
+        done_payload["corrections_text"] = final_corrections
+
+    logger.info(
+        "[CHAT_STREAM] completed in %.0fms len=%d",
+        (time.time() - started_at) * 1000,
+        len(final_reply),
+    )
+    yield _format_sse("done", done_payload)
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(payload: dict = Body(...)):
     """
@@ -1264,46 +1559,28 @@ async def chat_endpoint(payload: dict = Body(...)):
     2) Старый (Flutter): { language, student_message, level, words_learned }
     """
 
-    if "messages" in payload:
-        req = ChatRequest(**payload)
-
-    elif "message" in payload:
-        student_text = payload.get("message", "")
-        if not student_text:
-            raise HTTPException(status_code=422, detail="Empty 'message'")
-
-        req = ChatRequest(
-            messages=[ChatMessage(role="user", content=student_text)],
-            language=payload.get("language", "English"),
-            level=payload.get("level", "B1"),
-            character=payload.get("character", "Michael"),
-            topic=payload.get("topic", "general"),
-        )
-
-    elif "student_message" in payload:
-        legacy = LegacyChatRequest(**payload)
-        student_text = legacy.student_message
-        if not student_text:
-            raise HTTPException(status_code=422, detail="Empty 'student_message'")
-
-        req = ChatRequest(
-            messages=[ChatMessage(role="user", content=student_text)],
-            language=legacy.language,
-            level=getattr(legacy, "level", None) or "B1",
-            character=getattr(legacy, "character", None) or "Michael",
-            topic="general",
-        )
-
-    else:
-        raise HTTPException(
-            status_code=422,
-            detail="Unsupported request format: need 'messages' or 'message' or 'student_message'",
-        )
+    req = _build_chat_request_from_payload(payload)
 
 
     # НОВЫЙ ВЫЗОВ
     response = await asyncio.to_thread(call_llm_chat, req)
     return response
+
+
+@app.post("/chat_stream")
+async def chat_stream_endpoint(payload: dict = Body(...)):
+    req = _build_chat_request_from_payload(payload)
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+
+    return StreamingResponse(
+        _generate_chat_stream(req),
+        media_type="text/event-stream",
+        headers=headers,
+    )
 
 
 @app.post("/tts")
@@ -1312,24 +1589,36 @@ async def tts_endpoint(req: TTSRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required for TTS")
 
+    tts_server_url = os.getenv("TTS_SERVER_URL", "http://127.0.0.1:9010").rstrip("/")
+
+    payload = {
+        "text": text,
+        "language": (req.language or "en"),
+        "voice": (req.voice or "default"),
+        "sample_rate": req.sample_rate,
+    }
+
     try:
-        filepath = _ensure_cached_tts_file(
-            text,
-            req.language,
-            req.voice,
-            req.sample_rate,
-        )
-        audio_url = _build_audio_url(filepath.name)
-        return {"audio_url": audio_url}
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(f"{tts_server_url}/synthesize", json=payload)
+
+        if r.status_code != 200:
+            # покажем текст ошибки, чтобы было понятно что сломалось
+            raise HTTPException(status_code=500, detail=f"TTS server error {r.status_code}: {r.text[:500]}")
+
+        data = r.json()
+        audio_url = data.get("audio_url")
+        if not audio_url:
+            raise HTTPException(status_code=500, detail=f"TTS server returned no audio_url: {data}")
+
+        # вернём cached тоже (полезно для отладки/метрик)
+        return {"audio_url": audio_url, "cached": bool(data.get("cached", False))}
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("[TTS] Piper failed: %s", e)
-        # Возвращаем ответ без аудио, чтобы не ломать фронт
-        return JSONResponse(
-            status_code=200,
-            content={"audio_url": None, "error": "TTS synthesis failed"},
-        )
+        raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
+
 
 @app.post("/translate-word", response_model=TranslateResponse)
 async def translate_word_endpoint(payload: TranslateRequest):

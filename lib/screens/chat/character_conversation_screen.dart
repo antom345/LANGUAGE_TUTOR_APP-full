@@ -270,6 +270,7 @@ class _CharacterConversationScreenState
                           partnerGender: widget.partnerGender,
                           scrollController: _chatScrollController,
                           controller: _chatViewController,
+                          onCorrections: _onCorrectionsFromChat,
                         ),
                       ),
                       TextButton(
@@ -312,6 +313,22 @@ class _CharacterConversationScreenState
     if (_chatViewController.isReady) {
       _chatViewController.cancelRecording();
     }
+  }
+
+  void _onCorrectionsFromChat(String text) {
+    if (_isChatSheetOpen) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(12, 16, 12, 0),
+        duration: const Duration(seconds: 3),
+        content: Text(
+          text,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+    );
   }
 
   @override

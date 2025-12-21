@@ -145,6 +145,7 @@ class ChatView extends StatefulWidget {
   final ScrollController? scrollController;
   final bool showHeader;
   final ChatViewController? controller;
+  final ValueChanged<String>? onCorrections;
 
   const ChatView({
     super.key,
@@ -158,6 +159,7 @@ class ChatView extends StatefulWidget {
     this.scrollController,
     this.showHeader = true,
     this.controller,
+    this.onCorrections,
   });
 
   @override
@@ -367,63 +369,106 @@ class _ChatViewState extends State<ChatView> {
       _isSending = true;
     });
 
+    final requestMessages = List<ChatMessage>.from(_messages);
+    final assistantIndex = _messages.length;
+    var streamedText = '';
+
+    setState(() {
+      _messages.add(ChatMessage(role: 'assistant', text: ''));
+    });
+
     try {
-      final chatStarted = DateTime.now();
       final situation =
           context.read<SituationProvider>().getSituation(_languageCode);
-      final data = await _chatController.sendChat(
-        _messages,
+      final result = await _chatController.streamChat(
+        requestMessages,
         initial: initial,
         situation: situation,
+        onDelta: (delta) {
+          if (!mounted || delta.isEmpty) return;
+          streamedText += delta;
+          setState(() {
+            if (assistantIndex < _messages.length) {
+              _messages[assistantIndex] =
+                  ChatMessage(role: 'assistant', text: streamedText);
+            }
+          });
+        },
       );
-      debugPrint(
-        '[PERF] chat ms: ${DateTime.now().difference(chatStarted).inMilliseconds}',
-      );
-      final reply = data.reply;
-      final correctionsText = data.correctionsText ?? '';
-      String? assistantReplyForTts;
+
+      if (!mounted) return;
+
+      final normalizedReply = result.reply.trim();
+      final correctionsText = result.correctionsText?.trim() ?? '';
 
       setState(() {
-        final normalizedReply = reply.trim();
-        if (normalizedReply.isNotEmpty) {
+        if (assistantIndex < _messages.length) {
+          _messages[assistantIndex] =
+              ChatMessage(role: 'assistant', text: normalizedReply);
+        } else if (normalizedReply.isNotEmpty) {
           _messages.add(ChatMessage(role: 'assistant', text: normalizedReply));
-          assistantReplyForTts = normalizedReply;
         }
-        final normalizedCorrections = correctionsText.trim();
-        if (normalizedCorrections.isNotEmpty) {
+
+        if (correctionsText.isNotEmpty) {
           _messages.add(
             ChatMessage(
               role: 'assistant',
-              text: normalizedCorrections,
+              text: correctionsText,
               isCorrections: true,
             ),
           );
+          widget.onCorrections?.call(correctionsText);
         }
       });
 
-      if (assistantReplyForTts != null) {
-        unawaited(_speakAssistantReply(assistantReplyForTts!));
+      if (normalizedReply.isNotEmpty) {
+        unawaited(_speakAssistantReply(normalizedReply));
       }
     } on FormatException catch (e) {
-      setState(() {
-        _messages.add(
-          ChatMessage(
-            role: 'assistant',
-            text: 'System: Invalid server response format',
-          ),
-        );
-      });
+      if (mounted) {
+        setState(() {
+          if (assistantIndex < _messages.length) {
+            _messages[assistantIndex] = ChatMessage(
+              role: 'assistant',
+              text: 'System: Invalid server response format',
+            );
+          } else {
+            _messages.add(
+              ChatMessage(
+                role: 'assistant',
+                text: 'System: Invalid server response format',
+              ),
+            );
+          }
+        });
+      }
       debugPrint('CHAT PARSE ERROR: $e');
     } catch (e) {
-      setState(() {
-        _messages.add(
-          ChatMessage(role: 'assistant', text: 'System: connection error: $e'),
-        );
-      });
+      if (mounted) {
+        setState(() {
+          if (assistantIndex < _messages.length) {
+            _messages[assistantIndex] = ChatMessage(
+              role: 'assistant',
+              text: 'System: connection error: $e',
+            );
+          } else {
+            _messages.add(
+              ChatMessage(
+                role: 'assistant',
+                text: 'System: connection error: $e',
+              ),
+            );
+          }
+        });
+      }
     } finally {
-      setState(() {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+        });
+      } else {
         _isSending = false;
-      });
+      }
     }
   }
 

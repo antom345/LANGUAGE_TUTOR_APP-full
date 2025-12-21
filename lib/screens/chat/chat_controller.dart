@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -16,6 +17,18 @@ class TranslationResult {
     required this.example,
     required this.exampleTranslation,
     this.audioUrl,
+  });
+}
+
+class StreamChatResult {
+  final String reply;
+  final String? correctionsText;
+  final bool fromStream;
+
+  StreamChatResult({
+    required this.reply,
+    this.correctionsText,
+    required this.fromStream,
   });
 }
 
@@ -55,6 +68,88 @@ class ChatController {
       situation: situation,
     );
     return ChatResponseModel.fromJson(data);
+  }
+
+  Future<StreamChatResult> streamChat(
+    List<ChatMessage> messages, {
+    required bool initial,
+    SituationContext? situation,
+    required void Function(String delta) onDelta,
+  }) async {
+    final messagesPayload =
+        initial ? <Map<String, String>>[] : _buildMessagesPayload(messages);
+
+    final started = DateTime.now();
+    DateTime? firstTokenAt;
+    var buffer = StringBuffer();
+    String? correctionsText;
+
+    try {
+      await for (final event in ApiService.streamChat(
+        messages: messagesPayload,
+        language: language,
+        topic: topic,
+        level: level,
+        userGender: userGender,
+        userAge: userAge,
+        partnerGender: partnerGender,
+        situation: situation,
+      )) {
+        if (event.event == 'delta') {
+          final delta = (event.jsonData?['delta'] as String?)?.toString() ??
+              event.rawData;
+          if (delta.isEmpty) continue;
+
+          buffer.write(delta);
+          onDelta(delta);
+          firstTokenAt ??= DateTime.now();
+        } else if (event.event == 'done') {
+          firstTokenAt ??= DateTime.now();
+          final doneAt = DateTime.now();
+          final rawFull = (event.jsonData?['full_text'] as String?) ?? '';
+          final reply = rawFull.trim().isNotEmpty
+              ? rawFull.trim()
+              : buffer.toString().trim();
+          correctionsText =
+              (event.jsonData?['corrections_text'] as String?)?.trim();
+
+          debugPrint(
+            '[PERF] chat_stream first_token_ms: ${firstTokenAt!.difference(started).inMilliseconds}',
+          );
+          debugPrint(
+            '[PERF] chat_stream done_ms: ${doneAt.difference(started).inMilliseconds}',
+          );
+
+          return StreamChatResult(
+            reply: reply,
+            correctionsText:
+                (correctionsText?.isNotEmpty ?? false) ? correctionsText : null,
+            fromStream: true,
+          );
+        } else if (event.event == 'error') {
+          final err = (event.jsonData?['error'] as String?)?.trim();
+          throw HttpException(err?.isNotEmpty == true ? err! : 'Stream error');
+        }
+      }
+
+      throw const HttpException('Stream closed without completion');
+    } catch (e) {
+      debugPrint('Chat stream failed, fallback to /chat: $e');
+      final fallbackStarted = DateTime.now();
+      final fallback = await sendChat(
+        messages,
+        initial: initial,
+        situation: situation,
+      );
+      debugPrint(
+        '[PERF] chat_fallback ms: ${DateTime.now().difference(fallbackStarted).inMilliseconds}',
+      );
+      return StreamChatResult(
+        reply: fallback.reply,
+        correctionsText: fallback.correctionsText,
+        fromStream: false,
+      );
+    }
   }
 
   Future<TranslationResult> translateWord(String word) async {
@@ -177,15 +272,12 @@ class ChatResponseModel {
             : null;
 
     // Если reply содержит слепленные reply/corrections_text — попытаемся распарсить.
-    if (corrections == null &&
-        (reply.contains('reply:') || reply.contains('corrections_text:'))) {
-      final parsed = _extractCombined(reply);
-      if (parsed.reply.isNotEmpty) {
-        reply = parsed.reply;
-      }
-      if (parsed.corrections.isNotEmpty) {
-        corrections = parsed.corrections;
-      }
+    final inline = _extractInlineCorrections(reply);
+    if (inline.reply.isNotEmpty) {
+      reply = inline.reply;
+    }
+    if (corrections == null && inline.corrections.isNotEmpty) {
+      corrections = inline.corrections;
     }
 
     return ChatResponseModel(
@@ -232,4 +324,56 @@ class _ParsedCombined {
   final String reply;
   final String corrections;
   _ParsedCombined({required this.reply, required this.corrections});
+}
+
+class _InlineExtraction {
+  final String reply;
+  final String corrections;
+  const _InlineExtraction({required this.reply, required this.corrections});
+}
+
+_InlineExtraction _extractInlineCorrections(String raw) {
+  if (raw.isEmpty) return const _InlineExtraction(reply: '', corrections: '');
+
+  // Случай 1: JSON с corrections_text внутри.
+  final parsed = _tryParseJson(raw);
+  if (parsed != null) {
+    final replyVal = (parsed['reply'] ?? '').toString().trim();
+    final corrVal = (parsed['corrections_text'] ?? '').toString().trim();
+    if (replyVal.isNotEmpty || corrVal.isNotEmpty) {
+      return _InlineExtraction(reply: replyVal, corrections: corrVal);
+    }
+  }
+
+  // Случай 2: текст + {..json..}
+  final braceIdx = raw.indexOf('{');
+  if (braceIdx != -1) {
+    final before = raw.substring(0, braceIdx).trim();
+    final parsedTail = _tryParseJson(raw.substring(braceIdx));
+    final corrVal = parsedTail?['corrections_text']?.toString().trim() ?? '';
+    return _InlineExtraction(
+      reply: before.isNotEmpty ? before : raw.trim(),
+      corrections: corrVal,
+    );
+  }
+
+  // Случай 3: текстовые подсказки reply: / corrections_text:
+  if (raw.contains('reply:') || raw.contains('corrections_text:')) {
+    final parsedCombined = ChatResponseModel._extractCombined(raw);
+    return _InlineExtraction(
+      reply: parsedCombined.reply,
+      corrections: parsedCombined.corrections,
+    );
+  }
+
+  return _InlineExtraction(reply: raw.trim(), corrections: '');
+}
+
+Map<String, dynamic>? _tryParseJson(String text) {
+  try {
+    final decoded = jsonDecode(text);
+    return decoded is Map<String, dynamic> ? decoded : null;
+  } catch (_) {
+    return null;
+  }
 }
