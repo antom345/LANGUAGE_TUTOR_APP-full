@@ -101,6 +101,9 @@ class ChatController {
           if (delta.isEmpty) continue;
 
           buffer.write(delta);
+          debugPrint(
+            'STREAM delta len=${delta.length} total=${buffer.length}',
+          );
           onDelta(delta);
           firstTokenAt ??= DateTime.now();
         } else if (event.event == 'done') {

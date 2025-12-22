@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
@@ -11,6 +10,7 @@ import 'package:language_tutor_app/models/message.dart';
 import 'package:language_tutor_app/providers/situation_provider.dart';
 import 'package:language_tutor_app/screens/chat/chat_controller.dart';
 import 'package:language_tutor_app/screens/chat/situation_screen.dart';
+import 'package:language_tutor_app/services/audio_queue_player.dart';
 import 'package:language_tutor_app/ui/theme/app_theme.dart';
 import 'package:language_tutor_app/ui/widgets/app_scaffold.dart';
 import 'package:language_tutor_app/widgets/character_avatar.dart';
@@ -171,8 +171,11 @@ class _ChatViewState extends State<ChatView> {
   final TextEditingController _inputController = TextEditingController();
   bool _isSending = false;
   final List<SavedWord> _savedWords = [];
-  late final AudioPlayer _audioPlayer;
-  Future<void> _playChain = Future.value();
+  late final AudioQueuePlayer _audioQueuePlayer;
+  final StringBuffer _sentenceBuffer = StringBuffer();
+  final Set<String> _spokenSentences = <String>{};
+  Future<void> _sentenceTtsChain = Future.value();
+  int _ttsSession = 0;
 
   final AudioRecorder _audioRecorder = AudioRecorder();
   bool _isRecording = false;
@@ -197,7 +200,8 @@ class _ChatViewState extends State<ChatView> {
   void initState() {
     super.initState();
     widget.controller?._attach(this);
-    _audioPlayer = AudioPlayer();
+    _audioQueuePlayer = AudioQueuePlayer();
+    unawaited(_audioQueuePlayer.init());
     _languageCode = _languageCodeFromName(widget.learningLanguage);
     _chatController = ChatController(
       language: widget.learningLanguage,
@@ -216,49 +220,84 @@ class _ChatViewState extends State<ChatView> {
     _startConversation();
   }
 
-  void _playTtsUrl(String url, {required DateTime enqueuedAt}) {
-    if (url.isEmpty) return;
-    _playChain = _playChain.then((_) async {
-      try {
-        await _audioPlayer.stop();
-        final playCallStarted = DateTime.now();
-        debugPrint(
-          '[PERF] play call ms: ${playCallStarted.difference(enqueuedAt).inMilliseconds}',
-        );
-        // fire-and-forget start; stop already awaited to prevent overlap
-        unawaited(_audioPlayer.play(UrlSource(url)));
-      } catch (e) {
-        debugPrint('TTS play error: $e');
-      }
-    });
+  Future<void> _resetForNewAssistantReply() async {
+    _ttsSession++;
+    _sentenceTtsChain = Future.value();
+    _spokenSentences.clear();
+    _sentenceBuffer.clear();
+    await _audioQueuePlayer.stopAndClear();
   }
 
-  Future<void> _speakAssistantReply(String text) async {
-    final normalized = text.trim();
+  String _sentencePreview(String sentence) {
+    final clean = sentence.replaceAll('\n', ' ').trim();
+    if (clean.length <= 30) return clean;
+    return '${clean.substring(0, 30)}...';
+  }
+
+  int _findSentenceEnd(String text) {
+    final match = RegExp(r'[.!?\n]').firstMatch(text);
+    return match?.start ?? -1;
+  }
+
+  void _processSentenceBuffer({bool forceFlush = false}) {
+    final session = _ttsSession;
+    var current = _sentenceBuffer.toString();
+    var endIdx = _findSentenceEnd(current);
+    while (endIdx != -1) {
+      final sentence = current.substring(0, endIdx + 1).trim();
+      _sentenceBuffer
+        ..clear()
+        ..write(current.substring(endIdx + 1));
+      if (sentence.isNotEmpty && _spokenSentences.add(sentence)) {
+        _sentenceTtsChain =
+            _sentenceTtsChain.then((_) => _startTtsForSentence(sentence, session));
+      }
+      current = _sentenceBuffer.toString();
+      endIdx = _findSentenceEnd(current);
+    }
+
+    if (forceFlush) {
+      final tail = _sentenceBuffer.toString().trim();
+      if (tail.length > 30 && _spokenSentences.add(tail)) {
+        _sentenceTtsChain =
+            _sentenceTtsChain.then((_) => _startTtsForSentence(tail, session));
+      }
+      _sentenceBuffer.clear();
+    }
+  }
+
+  Future<void> _startTtsForSentence(String sentence, int session) async {
+    if (session != _ttsSession) return;
+    final normalized = sentence.trim();
     if (normalized.isEmpty) return;
 
     try {
-      final ttsStarted = DateTime.now();
       final audioUrl = await _chatController.fetchMessageTtsUrl(normalized);
-      debugPrint(
-        '[PERF] tts ms: ${DateTime.now().difference(ttsStarted).inMilliseconds}',
-      );
+      if (session != _ttsSession) return;
       if (audioUrl == null || audioUrl.isEmpty) {
         return;
       }
 
-      if (!mounted) return;
-      _playTtsUrl(audioUrl, enqueuedAt: DateTime.now());
+      debugPrint(
+        'TTS sentence=${_sentencePreview(normalized)} url=$audioUrl',
+      );
+      await _audioQueuePlayer.enqueue(audioUrl);
     } catch (e, st) {
-      debugPrint('Auto TTS error: $e\n$st');
+      debugPrint('Sentence TTS error: $e\n$st');
     }
+  }
+
+  Future<void> _playAudioImmediately(String url) async {
+    if (url.isEmpty) return;
+    await _audioQueuePlayer.stopAndClear();
+    await _audioQueuePlayer.enqueue(url);
   }
 
   @override
   void dispose() {
     widget.controller?._detach(this);
     _inputController.dispose();
-    _audioPlayer.dispose();
+    unawaited(_audioQueuePlayer.dispose());
     _audioRecorder.dispose();
     _recordingTimeoutTimer?.cancel();
     super.dispose();
@@ -365,6 +404,7 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _sendToBackend({required bool initial}) async {
+    await _resetForNewAssistantReply();
     setState(() {
       _isSending = true;
     });
@@ -387,6 +427,8 @@ class _ChatViewState extends State<ChatView> {
         onDelta: (delta) {
           if (!mounted || delta.isEmpty) return;
           streamedText += delta;
+          _sentenceBuffer.write(delta);
+          _processSentenceBuffer();
           setState(() {
             if (assistantIndex < _messages.length) {
               _messages[assistantIndex] =
@@ -421,8 +463,13 @@ class _ChatViewState extends State<ChatView> {
         }
       });
 
-      if (normalizedReply.isNotEmpty) {
-        unawaited(_speakAssistantReply(normalizedReply));
+      if (result.fromStream) {
+        _processSentenceBuffer(forceFlush: true);
+      } else {
+        _sentenceBuffer
+          ..clear()
+          ..write(normalizedReply);
+        _processSentenceBuffer(forceFlush: true);
       }
     } on FormatException catch (e) {
       if (mounted) {
@@ -711,7 +758,7 @@ class _ChatViewState extends State<ChatView> {
                         });
                       }
 
-                      _playTtsUrl(audioUrl!, enqueuedAt: DateTime.now());
+                      await _playAudioImmediately(audioUrl!);
                     },
                   ),
                   IconButton(
