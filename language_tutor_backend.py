@@ -1,7 +1,6 @@
 import asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
@@ -256,6 +255,28 @@ AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 AUDIO_BASE_URL = os.getenv("AUDIO_BASE_URL", "https://api.languagetutorapp.org").rstrip("/")
 
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "/workspace/langapp/tools/ffmpeg/ffmpeg")
+
+COURSES_V2_DIR = Path(os.getenv("COURSES_V2_DIR", "/workspace/langapp/courses_v2"))
+
+SKILL_META = {
+    "listening": {"title": "Listening", "description": "Train comprehension through audio-first tasks."},
+    "speaking": {"title": "Speaking", "description": "Practice speaking with prompts and dialogues."},
+    "grammar": {"title": "Grammar", "description": "Solidify grammar patterns with focused drills."},
+    "vocabulary": {"title": "Vocabulary", "description": "Grow your word bank with themed practice."},
+    "writing": {"title": "Writing", "description": "Write and polish texts for different scenarios."},
+    "error_correction": {"title": "Error correction", "description": "Spot and fix mistakes to build accuracy."},
+}
+
+SKILL_ORDER = [
+    "vocabulary",
+    "grammar",
+    "listening",
+    "speaking",
+    "writing",
+    "error_correction",
+]
+
+DEFAULT_SKILL = "vocabulary"
 
 
 BACKEND_HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
@@ -577,6 +598,7 @@ class TTSRequest(BaseModel):
     language: Optional[str] = "en"
     voice: Optional[str] = None  # опциональный выбор конкретной модели
     character: Optional[str] = None
+    speed: Optional[float] = None
     sample_rate: Optional[int] = None
 
 
@@ -726,21 +748,10 @@ LLM_HTTP = httpx.Client(
     headers=_llm_headers(),
 )
 
-LLM_HTTP_ASYNC = httpx.AsyncClient(
-    timeout=LLM_TIMEOUT,
-    trust_env=False,
-    headers=_llm_headers(),
-)
-
-
 @app.on_event("shutdown")
 async def _shutdown():
     try:
         LLM_HTTP.close()
-    except Exception:
-        pass
-    try:
-        await LLM_HTTP_ASYNC.aclose()
     except Exception:
         pass
 
@@ -870,61 +881,6 @@ def _prepare_chat_messages(
 
     logger.info("[CHAT] situation present: %s", "yes" if req.situation else "no")
     return partner_name, messages, has_user_message, last_message_from_user
-
-
-def _format_sse(event: str, data: Dict[str, Any]) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def _extract_json_string_field(raw_text: str, field: str) -> tuple[str, bool]:
-    """
-    Пытаемся вынуть значение строкового поля из частичного JSON.
-    Возвращает (значение, найден_закрывающий_кавычки).
-    """
-    marker = f'"{field}"'
-    start_idx = raw_text.find(marker)
-    if start_idx == -1:
-        return "", False
-
-    colon_idx = raw_text.find(":", start_idx + len(marker))
-    if colon_idx == -1:
-        return "", False
-
-    quote_idx = raw_text.find('"', colon_idx)
-    if quote_idx == -1:
-        return "", False
-
-    buf: list[str] = []
-    escaped = False
-    closed = False
-    for ch in raw_text[quote_idx + 1 :]:
-        if escaped:
-            if ch == "n":
-                buf.append("\n")
-            elif ch == "t":
-                buf.append("\t")
-            elif ch == "r":
-                buf.append("\r")
-            elif ch == '"':
-                buf.append('"')
-            elif ch == "\\":
-                buf.append("\\")
-            else:
-                buf.append(ch)
-            escaped = False
-            continue
-
-        if ch == "\\":
-            escaped = True
-            continue
-
-        if ch == '"':
-            closed = True
-            break
-
-        buf.append(ch)
-
-    return "".join(buf), closed
 
 
 def llm_chat_completion(
@@ -1421,136 +1377,6 @@ async def generate_situation_endpoint(req: GenerateSituationRequest):
         )
 
 
-async def _generate_chat_stream(req: ChatRequest):
-    (
-        partner_name,
-        messages,
-        has_user_message,
-        last_message_from_user,
-    ) = _prepare_chat_messages(req)
-
-    payload: Dict[str, Any] = {
-        "model": LLM_MODEL,
-        "messages": messages,
-        "stream": True,
-        "options": {
-            "temperature": 0.4,
-        },
-    }
-
-    raw_accumulated = ""
-    reply_so_far = ""
-    corrections_so_far = ""
-    last_llm_piece = ""
-    started_at = time.time()
-
-    try:
-        async with LLM_HTTP_ASYNC.stream(
-            "POST",
-            LLM_CHAT_COMPLETIONS_URL,
-            json=payload,
-        ) as resp:
-            resp.raise_for_status()
-
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except Exception:
-                    logger.exception("[CHAT_STREAM] failed to parse chunk")
-                    continue
-
-                content_piece = (
-                    (data.get("message") or {}).get("content")
-                    or data.get("response")
-                    or ""
-                )
-
-                if not isinstance(content_piece, str):
-                    content_piece = str(content_piece)
-
-                if last_llm_piece and content_piece.startswith(last_llm_piece):
-                    raw_increment = content_piece[len(last_llm_piece) :]
-                else:
-                    raw_increment = content_piece
-
-                raw_accumulated += raw_increment
-                last_llm_piece = content_piece
-
-                reply_candidate, _ = _extract_json_string_field(
-                    raw_accumulated,
-                    "reply",
-                )
-                if not reply_candidate:
-                    reply_candidate = raw_accumulated
-
-                corrections_candidate, corrections_closed = _extract_json_string_field(
-                    raw_accumulated,
-                    "corrections_text",
-                )
-                if corrections_candidate and corrections_closed:
-                    corrections_so_far = corrections_candidate
-
-                if reply_candidate.startswith(reply_so_far):
-                    delta = reply_candidate[len(reply_so_far) :]
-                else:
-                    delta = reply_candidate
-
-                if delta:
-                    reply_so_far = reply_candidate
-                    yield _format_sse("delta", {"delta": delta})
-
-    except httpx.HTTPStatusError as exc:
-        status = getattr(exc.response, "status_code", None) or "unknown"
-        err_msg = f"LLM stream HTTP error {status}"
-        logger.exception("[CHAT_STREAM] http error: %s", err_msg)
-        yield _format_sse("error", {"error": err_msg})
-        return
-    except Exception as exc:
-        logger.exception("[CHAT_STREAM] exception: %s", exc)
-        yield _format_sse("error", {"error": str(exc)})
-        return
-
-    parsed = _parse_json_content(raw_accumulated)
-    if parsed:
-        final_reply = str(parsed.get("reply", reply_so_far)).strip() or reply_so_far
-        final_corrections = str(
-            parsed.get("corrections_text", corrections_so_far)
-        ).strip()
-    else:
-        fallback = _parse_textual_reply(raw_accumulated or reply_so_far)
-        final_reply = (fallback.get("reply") or reply_so_far).strip()
-        final_corrections = (fallback.get("corrections_text") or corrections_so_far).strip()
-
-    if not has_user_message or not last_message_from_user:
-        final_corrections = ""
-
-    if not final_reply:
-        final_reply = "Sorry, something went wrong. Could you write that again?"
-
-    if final_reply.startswith(reply_so_far):
-        remaining = final_reply[len(reply_so_far) :]
-        if remaining:
-            reply_so_far = final_reply
-            yield _format_sse("delta", {"delta": remaining})
-
-    done_payload: Dict[str, Any] = {
-        "done": True,
-        "full_text": final_reply,
-        "partner_name": partner_name,
-    }
-    if final_corrections:
-        done_payload["corrections_text"] = final_corrections
-
-    logger.info(
-        "[CHAT_STREAM] completed in %.0fms len=%d",
-        (time.time() - started_at) * 1000,
-        len(final_reply),
-    )
-    yield _format_sse("done", done_payload)
-
-
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(payload: dict = Body(...)):
     """
@@ -1567,22 +1393,6 @@ async def chat_endpoint(payload: dict = Body(...)):
     return response
 
 
-@app.post("/chat_stream")
-async def chat_stream_endpoint(payload: dict = Body(...)):
-    req = _build_chat_request_from_payload(payload)
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-    }
-
-    return StreamingResponse(
-        _generate_chat_stream(req),
-        media_type="text/event-stream",
-        headers=headers,
-    )
-
-
 @app.post("/tts")
 async def tts_endpoint(req: TTSRequest):
     text = (req.text or "").strip()
@@ -1591,10 +1401,15 @@ async def tts_endpoint(req: TTSRequest):
 
     tts_server_url = os.getenv("TTS_SERVER_URL", "http://127.0.0.1:9010").rstrip("/")
 
+    voice_raw = (req.voice or "").strip().lower()
+    voice = "af_heart" if not voice_raw or voice_raw == "default" else (req.voice or "af_heart")
+    speed = req.speed if req.speed is not None else 1.0
+
     payload = {
         "text": text,
         "language": (req.language or "en"),
-        "voice": (req.voice or "default"),
+        "voice": voice,
+        "speed": speed,
         "sample_rate": req.sample_rate,
     }
 
@@ -1604,7 +1419,10 @@ async def tts_endpoint(req: TTSRequest):
 
         if r.status_code != 200:
             # покажем текст ошибки, чтобы было понятно что сломалось
-            raise HTTPException(status_code=500, detail=f"TTS server error {r.status_code}: {r.text[:500]}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"TTS server error {r.status_code}: {r.text[:300]}",
+            )
 
         data = r.json()
         audio_url = data.get("audio_url")
@@ -1629,6 +1447,117 @@ async def translate_word_endpoint(payload: TranslateRequest):
         payload.word,
         bool(payload.with_audio),
     )
+
+def _courses_lang_dir(lang: str) -> Path:
+    return COURSES_V2_DIR / (lang or "")
+
+
+def _iter_lesson_files(lang_dir: Path) -> List[Path]:
+    return sorted(
+        [p for p in lang_dir.rglob("lessons/*.json") if p.is_file()],
+        key=lambda p: str(p),
+    )
+
+
+def _normalize_lesson_skill(skill_raw: Optional[str]) -> str:
+    skill = (skill_raw or "").strip().lower()
+    if skill in SKILL_META:
+        return skill
+    return DEFAULT_SKILL
+
+
+def _lesson_summary_from_file(lesson_path: Path) -> Optional[Dict[str, str]]:
+    try:
+        data = json.loads(lesson_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("[SKILLS] failed to read lesson %s: %s", lesson_path, e)
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    lesson_id = str(
+        data.get("lessonId")
+        or data.get("lesson_id")
+        or lesson_path.stem
+    ).strip() or lesson_path.stem
+
+    title = str(
+        data.get("title")
+        or data.get("lesson_title")
+        or f"Lesson {lesson_id}"
+    ).strip() or f"Lesson {lesson_id}"
+
+    skill = _normalize_lesson_skill(data.get("skill"))
+
+    return {
+        "lessonId": lesson_id,
+        "title": title,
+        "skill": skill,
+    }
+
+
+def _load_lessons_grouped_by_skill(lang: str) -> Dict[str, List[Dict[str, str]]]:
+    lang_dir = _courses_lang_dir(lang)
+
+    if not lang_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Language '{lang}' not found")
+
+    grouped: Dict[str, List[Dict[str, str]]] = {k: [] for k in SKILL_META.keys()}
+
+    for lesson_path in _iter_lesson_files(lang_dir):
+        summary = _lesson_summary_from_file(lesson_path)
+        if not summary:
+            continue
+        grouped.setdefault(summary["skill"], []).append(summary)
+
+    return grouped
+
+
+@app.get("/skills/{lang}")
+def list_skills(lang: str):
+    lessons_by_skill = _load_lessons_grouped_by_skill(lang)
+
+    tracks = []
+    for skill_id in SKILL_ORDER:
+        meta = SKILL_META.get(skill_id, {})
+        lessons = lessons_by_skill.get(skill_id, [])
+        lessons_count = len(lessons)
+
+        tracks.append(
+            {
+                "id": skill_id,
+                "title": meta.get("title", skill_id.title()),
+                "description": meta.get("description", ""),
+                "lessonsCount": lessons_count,
+                "xp": 0,
+                "xpGoal": max(100, lessons_count * 50),
+            }
+        )
+
+    return tracks
+
+
+@app.get("/skills/{lang}/{skill_id}")
+def list_lessons_for_skill(lang: str, skill_id: str):
+    if not _courses_lang_dir(lang).exists():
+        raise HTTPException(status_code=404, detail=f"Language '{lang}' not found")
+
+    skill_key = (skill_id or "").strip().lower()
+    if skill_key not in SKILL_META:
+        return []
+
+    lessons_by_skill = _load_lessons_grouped_by_skill(lang)
+    lessons = lessons_by_skill.get(skill_key, [])
+
+    return [
+        {
+            "lessonId": lesson["lessonId"],
+            "title": lesson["title"],
+            "progress": 0,
+        }
+        for lesson in lessons
+    ]
 
 def _fallback_course_plan(prefs: CoursePreferences) -> CoursePlan:
     # Минимальный валидный план, чтобы фронт не падал

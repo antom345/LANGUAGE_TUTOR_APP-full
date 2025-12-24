@@ -20,18 +20,6 @@ class TranslationResult {
   });
 }
 
-class StreamChatResult {
-  final String reply;
-  final String? correctionsText;
-  final bool fromStream;
-
-  StreamChatResult({
-    required this.reply,
-    this.correctionsText,
-    required this.fromStream,
-  });
-}
-
 class ChatController {
   final String language;
   final String level;
@@ -39,6 +27,9 @@ class ChatController {
   final String userGender;
   final int? userAge;
   final String partnerGender;
+  final String? ttsVoice;
+  final double? ttsSpeed;
+  final int? ttsSampleRate;
 
   ChatController({
     required this.language,
@@ -47,6 +38,9 @@ class ChatController {
     required this.userGender,
     required this.userAge,
     required this.partnerGender,
+    this.ttsVoice,
+    this.ttsSpeed,
+    this.ttsSampleRate,
   });
 
   Future<ChatResponseModel> sendChat(
@@ -68,91 +62,6 @@ class ChatController {
       situation: situation,
     );
     return ChatResponseModel.fromJson(data);
-  }
-
-  Future<StreamChatResult> streamChat(
-    List<ChatMessage> messages, {
-    required bool initial,
-    SituationContext? situation,
-    required void Function(String delta) onDelta,
-  }) async {
-    final messagesPayload =
-        initial ? <Map<String, String>>[] : _buildMessagesPayload(messages);
-
-    final started = DateTime.now();
-    DateTime? firstTokenAt;
-    var buffer = StringBuffer();
-    String? correctionsText;
-
-    try {
-      await for (final event in ApiService.streamChat(
-        messages: messagesPayload,
-        language: language,
-        topic: topic,
-        level: level,
-        userGender: userGender,
-        userAge: userAge,
-        partnerGender: partnerGender,
-        situation: situation,
-      )) {
-        if (event.event == 'delta') {
-          final delta = (event.jsonData?['delta'] as String?)?.toString() ??
-              event.rawData;
-          if (delta.isEmpty) continue;
-
-          buffer.write(delta);
-          debugPrint(
-            'STREAM delta len=${delta.length} total=${buffer.length}',
-          );
-          onDelta(delta);
-          firstTokenAt ??= DateTime.now();
-        } else if (event.event == 'done') {
-          firstTokenAt ??= DateTime.now();
-          final doneAt = DateTime.now();
-          final rawFull = (event.jsonData?['full_text'] as String?) ?? '';
-          final reply = rawFull.trim().isNotEmpty
-              ? rawFull.trim()
-              : buffer.toString().trim();
-          correctionsText =
-              (event.jsonData?['corrections_text'] as String?)?.trim();
-
-          debugPrint(
-            '[PERF] chat_stream first_token_ms: ${firstTokenAt!.difference(started).inMilliseconds}',
-          );
-          debugPrint(
-            '[PERF] chat_stream done_ms: ${doneAt.difference(started).inMilliseconds}',
-          );
-
-          return StreamChatResult(
-            reply: reply,
-            correctionsText:
-                (correctionsText?.isNotEmpty ?? false) ? correctionsText : null,
-            fromStream: true,
-          );
-        } else if (event.event == 'error') {
-          final err = (event.jsonData?['error'] as String?)?.trim();
-          throw HttpException(err?.isNotEmpty == true ? err! : 'Stream error');
-        }
-      }
-
-      throw const HttpException('Stream closed without completion');
-    } catch (e) {
-      debugPrint('Chat stream failed, fallback to /chat: $e');
-      final fallbackStarted = DateTime.now();
-      final fallback = await sendChat(
-        messages,
-        initial: initial,
-        situation: situation,
-      );
-      debugPrint(
-        '[PERF] chat_fallback ms: ${DateTime.now().difference(fallbackStarted).inMilliseconds}',
-      );
-      return StreamChatResult(
-        reply: fallback.reply,
-        correctionsText: fallback.correctionsText,
-        fromStream: false,
-      );
-    }
   }
 
   Future<TranslationResult> translateWord(String word) async {
@@ -227,11 +136,21 @@ class ChatController {
     final normalized = text.trim();
     if (normalized.isEmpty) return null;
 
+    final voiceToSend = () {
+      final v = ttsVoice?.trim() ?? '';
+      if (v.isEmpty || v.toLowerCase() == 'default') return 'af_heart';
+      return v;
+    }();
+
     try {
-      return await ApiService.synthesizeTts(
+      final audioUrl = await ApiService.synthesizeTts(
         text: normalized,
         language: language,
+        voice: voiceToSend,
+        speed: ttsSpeed,
+        sampleRate: ttsSampleRate,
       );
+      return audioUrl;
     } catch (e, st) {
       debugPrint('Message TTS error: $e\n$st');
       return null;

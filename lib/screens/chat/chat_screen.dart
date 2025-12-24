@@ -172,10 +172,8 @@ class _ChatViewState extends State<ChatView> {
   bool _isSending = false;
   final List<SavedWord> _savedWords = [];
   late final AudioQueuePlayer _audioQueuePlayer;
-  final StringBuffer _sentenceBuffer = StringBuffer();
-  final Set<String> _spokenSentences = <String>{};
-  Future<void> _sentenceTtsChain = Future.value();
   int _ttsSession = 0;
+  String? _lastSpokenHash;
 
   final AudioRecorder _audioRecorder = AudioRecorder();
   bool _isRecording = false;
@@ -222,68 +220,38 @@ class _ChatViewState extends State<ChatView> {
 
   Future<void> _resetForNewAssistantReply() async {
     _ttsSession++;
-    _sentenceTtsChain = Future.value();
-    _spokenSentences.clear();
-    _sentenceBuffer.clear();
+    _lastSpokenHash = null;
     await _audioQueuePlayer.stopAndClear();
   }
 
-  String _sentencePreview(String sentence) {
-    final clean = sentence.replaceAll('\n', ' ').trim();
-    if (clean.length <= 30) return clean;
-    return '${clean.substring(0, 30)}...';
-  }
-
-  int _findSentenceEnd(String text) {
-    final match = RegExp(r'[.!?\n]').firstMatch(text);
-    return match?.start ?? -1;
-  }
-
-  void _processSentenceBuffer({bool forceFlush = false}) {
+  Future<void> _playReplyTts(String reply) async {
     final session = _ttsSession;
-    var current = _sentenceBuffer.toString();
-    var endIdx = _findSentenceEnd(current);
-    while (endIdx != -1) {
-      final sentence = current.substring(0, endIdx + 1).trim();
-      _sentenceBuffer
-        ..clear()
-        ..write(current.substring(endIdx + 1));
-      if (sentence.isNotEmpty && _spokenSentences.add(sentence)) {
-        _sentenceTtsChain =
-            _sentenceTtsChain.then((_) => _startTtsForSentence(sentence, session));
-      }
-      current = _sentenceBuffer.toString();
-      endIdx = _findSentenceEnd(current);
-    }
+    final hash = reply.trim();
+    if (hash.isEmpty) return;
+    if (_lastSpokenHash == hash) return;
 
-    if (forceFlush) {
-      final tail = _sentenceBuffer.toString().trim();
-      if (tail.length > 30 && _spokenSentences.add(tail)) {
-        _sentenceTtsChain =
-            _sentenceTtsChain.then((_) => _startTtsForSentence(tail, session));
-      }
-      _sentenceBuffer.clear();
-    }
-  }
-
-  Future<void> _startTtsForSentence(String sentence, int session) async {
-    if (session != _ttsSession) return;
-    final normalized = sentence.trim();
-    if (normalized.isEmpty) return;
-
+    final startedAt = DateTime.now();
     try {
-      final audioUrl = await _chatController.fetchMessageTtsUrl(normalized);
+      final audioUrl = await _chatController.fetchMessageTtsUrl(reply);
       if (session != _ttsSession) return;
-      if (audioUrl == null || audioUrl.isEmpty) {
-        return;
-      }
+      if (audioUrl == null || audioUrl.isEmpty) return;
+      _lastSpokenHash = hash;
 
-      debugPrint(
-        'TTS sentence=${_sentencePreview(normalized)} url=$audioUrl',
+      final fetchMs = DateTime.now().difference(startedAt).inMilliseconds;
+      debugPrint('[PERF] tts_fetch_ms: $fetchMs');
+
+      await _audioQueuePlayer.stopAndClear();
+      await _audioQueuePlayer.enqueue(
+        audioUrl,
+        onStart: () {
+          final playMs =
+              DateTime.now().difference(startedAt).inMilliseconds;
+          debugPrint('[PERF] play_ms: $playMs');
+        },
       );
-      await _audioQueuePlayer.enqueue(audioUrl);
     } catch (e, st) {
-      debugPrint('Sentence TTS error: $e\n$st');
+      if (session != _ttsSession) return;
+      debugPrint('Reply TTS error: $e\n$st');
     }
   }
 
@@ -295,6 +263,7 @@ class _ChatViewState extends State<ChatView> {
 
   @override
   void dispose() {
+    _ttsSession++;
     widget.controller?._detach(this);
     _inputController.dispose();
     unawaited(_audioQueuePlayer.dispose());
@@ -411,7 +380,6 @@ class _ChatViewState extends State<ChatView> {
 
     final requestMessages = List<ChatMessage>.from(_messages);
     final assistantIndex = _messages.length;
-    var streamedText = '';
 
     setState(() {
       _messages.add(ChatMessage(role: 'assistant', text: ''));
@@ -420,23 +388,15 @@ class _ChatViewState extends State<ChatView> {
     try {
       final situation =
           context.read<SituationProvider>().getSituation(_languageCode);
-      final result = await _chatController.streamChat(
+      final chatStartedAt = DateTime.now();
+      final result = await _chatController.sendChat(
         requestMessages,
         initial: initial,
         situation: situation,
-        onDelta: (delta) {
-          if (!mounted || delta.isEmpty) return;
-          streamedText += delta;
-          _sentenceBuffer.write(delta);
-          _processSentenceBuffer();
-          setState(() {
-            if (assistantIndex < _messages.length) {
-              _messages[assistantIndex] =
-                  ChatMessage(role: 'assistant', text: streamedText);
-            }
-          });
-        },
       );
+      final chatMs =
+          DateTime.now().difference(chatStartedAt).inMilliseconds;
+      debugPrint('[PERF] chat_ms: $chatMs');
 
       if (!mounted) return;
 
@@ -463,13 +423,8 @@ class _ChatViewState extends State<ChatView> {
         }
       });
 
-      if (result.fromStream) {
-        _processSentenceBuffer(forceFlush: true);
-      } else {
-        _sentenceBuffer
-          ..clear()
-          ..write(normalizedReply);
-        _processSentenceBuffer(forceFlush: true);
+      if (normalizedReply.isNotEmpty) {
+        _playReplyTts(normalizedReply);
       }
     } on FormatException catch (e) {
       if (mounted) {

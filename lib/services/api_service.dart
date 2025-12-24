@@ -4,20 +4,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:language_tutor_app/models/lesson.dart';
+import 'package:language_tutor_app/models/skill_track.dart';
 import 'package:language_tutor_app/models/situation.dart';
 import 'package:language_tutor_app/utils/constants.dart';
-
-class SseEvent {
-  final String event;
-  final Map<String, dynamic>? jsonData;
-  final String rawData;
-
-  const SseEvent({
-    required this.event,
-    required this.rawData,
-    this.jsonData,
-  });
-}
 
 class ApiService {
   static Map<String, String> get _jsonHeaders =>
@@ -130,123 +119,6 @@ class ApiService {
     return _decodeJsonMap(body: resp.body, label: 'Chat');
   }
 
-  static Stream<SseEvent> streamChat({
-    required List<Map<String, String>> messages,
-    required String language,
-    required String topic,
-    required String level,
-    required String userGender,
-    required int? userAge,
-    required String partnerGender,
-    SituationContext? situation,
-  }) async* {
-    final uri = Uri.parse('$kApiBaseUrl/chat_stream');
-    final payload = {
-      'messages': messages,
-      'language': language,
-      'topic': topic,
-      'level': level,
-      'user_gender': userGender,
-      'user_age': userAge,
-      'partner_gender': partnerGender,
-    };
-    if (situation != null) {
-      payload['situation'] = situation.toJson();
-    }
-
-    final request = http.Request('POST', uri)
-      ..headers.addAll(_jsonHeaders)
-      ..body = jsonEncode(payload);
-
-    final client = http.Client();
-    http.StreamedResponse resp;
-    try {
-      resp = await client.send(request);
-    } catch (e) {
-      client.close();
-      debugPrint('Chat stream network error: $e');
-      rethrow;
-    }
-
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      final body = await resp.stream.bytesToString();
-      client.close();
-      throw HttpException(
-        'Chat stream error ${resp.statusCode}: ${body.isEmpty ? '<empty body>' : body}',
-      );
-    }
-
-    final lines =
-        resp.stream.transform(utf8.decoder).transform(const LineSplitter());
-
-    String? currentEvent;
-    var dataBuffer = StringBuffer();
-
-    try {
-      await for (final line in lines) {
-        if (line.isEmpty) {
-          if (currentEvent != null) {
-            final rawData = dataBuffer.toString().trimRight();
-            Map<String, dynamic>? parsed;
-            if (rawData.isNotEmpty) {
-              try {
-                final decoded = jsonDecode(rawData);
-                if (decoded is Map<String, dynamic>) {
-                  parsed = decoded;
-                }
-              } catch (_) {
-                // keep rawData
-              }
-            }
-            yield SseEvent(
-              event: currentEvent!,
-              rawData: rawData,
-              jsonData: parsed,
-            );
-          }
-          currentEvent = null;
-          dataBuffer = StringBuffer();
-          continue;
-        }
-
-        if (line.startsWith('event:')) {
-          currentEvent = line.substring('event:'.length).trim();
-          continue;
-        }
-
-        if (line.startsWith('data:')) {
-          dataBuffer.writeln(line.substring('data:'.length).trim());
-          continue;
-        }
-
-        if (line.startsWith(':')) {
-          // comment / keep-alive
-          continue;
-        }
-      }
-
-      if (currentEvent != null) {
-        final rawData = dataBuffer.toString().trimRight();
-        Map<String, dynamic>? parsed;
-        if (rawData.isNotEmpty) {
-          try {
-            final decoded = jsonDecode(rawData);
-            if (decoded is Map<String, dynamic>) {
-              parsed = decoded;
-            }
-          } catch (_) {}
-        }
-        yield SseEvent(
-          event: currentEvent!,
-          rawData: rawData,
-          jsonData: parsed,
-        );
-      }
-    } finally {
-      client.close();
-    }
-  }
-
   static Future<Map<String, dynamic>> translateWord({
     required String word,
     required String language,
@@ -341,6 +213,8 @@ class ApiService {
 
     final body = {
       'language': language,
+      'content_language': language, // просим выдавать описание на выбранном языке
+      'translation_source_language': 'Russian',
       'level_hint': level,
       'lesson_title': lessonTitle,
       'grammar_topics': grammarTopics,
@@ -356,22 +230,73 @@ class ApiService {
     return LessonContentModel.fromJson(data);
   }
 
+  static Future<List<SkillTrack>> fetchSkillTracks(String language) async {
+    final uri = Uri.parse('$kApiBaseUrl/skills/$language');
+    final resp = await http.get(uri, headers: _jsonHeaders);
+
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw HttpException(
+          'Skill tracks error ${resp.statusCode}: ${resp.body}');
+    }
+
+    final decoded = jsonDecode(resp.body);
+    if (decoded is! List) {
+      throw const FormatException('Skill tracks response is not a list');
+    }
+    return decoded
+        .whereType<Map<String, dynamic>>()
+        .map(SkillTrack.fromJson)
+        .toList();
+  }
+
+  static Future<List<SkillLesson>> fetchSkillLessons(
+    String language,
+    String skillId,
+  ) async {
+    final uri = Uri.parse('$kApiBaseUrl/skills/$language/$skillId');
+    final resp = await http.get(uri, headers: _jsonHeaders);
+
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw HttpException(
+          'Skill lessons error ${resp.statusCode}: ${resp.body}');
+    }
+
+    final decoded = jsonDecode(resp.body);
+    if (decoded is! List) {
+      throw const FormatException('Skill lessons response is not a list');
+    }
+    return decoded
+        .whereType<Map<String, dynamic>>()
+        .map(SkillLesson.fromJson)
+        .toList();
+  }
+
   static Future<String?> synthesizeTts({
     required String text,
     required String language,
     String? voice,
+    double? speed,
+    int? sampleRate,
   }) async {
     final uri = Uri.parse('$kApiBaseUrl/tts');
+    final payload = <String, dynamic>{
+      'text': text,
+      'language': language,
+      'speed': speed,
+      'sample_rate': sampleRate,
+    };
+
+    final trimmedVoice = voice?.trim() ?? '';
+    if (trimmedVoice.isNotEmpty && trimmedVoice.toLowerCase() != 'default') {
+      payload['voice'] = trimmedVoice;
+    }
+
     http.Response resp;
     try {
       resp = await http.post(
         uri,
         headers: _jsonHeaders,
-        body: jsonEncode({
-          'text': text,
-          'language': language,
-          'voice': voice,
-        }),
+        body: jsonEncode(payload),
       );
     } catch (e) {
       debugPrint('TTS network error: $e');
