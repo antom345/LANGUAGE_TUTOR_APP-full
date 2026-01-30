@@ -1449,7 +1449,16 @@ async def translate_word_endpoint(payload: TranslateRequest):
     )
 
 def _courses_lang_dir(lang: str) -> Path:
-    return COURSES_V2_DIR / (lang or "")
+    """Return the best-matching path for a language, trying aliases."""
+    normalized = normalize_lang_code(lang or "")
+    candidates = [
+        COURSES_V2_DIR / (lang or ""),
+        COURSES_V2_DIR / normalized,
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
 
 
 def _iter_lesson_files(lang_dir: Path) -> List[Path]:
@@ -1500,10 +1509,11 @@ def _lesson_summary_from_file(lesson_path: Path) -> Optional[Dict[str, str]]:
 def _load_lessons_grouped_by_skill(lang: str) -> Dict[str, List[Dict[str, str]]]:
     lang_dir = _courses_lang_dir(lang)
 
-    if not lang_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Language '{lang}' not found")
-
     grouped: Dict[str, List[Dict[str, str]]] = {k: [] for k in SKILL_META.keys()}
+
+    if not lang_dir.exists():
+        logger.warning("[SKILLS] language dir not found: %s", lang_dir)
+        return grouped
 
     for lesson_path in _iter_lesson_files(lang_dir):
         summary = _lesson_summary_from_file(lesson_path)
@@ -1540,9 +1550,6 @@ def list_skills(lang: str):
 
 @app.get("/skills/{lang}/{skill_id}")
 def list_lessons_for_skill(lang: str, skill_id: str):
-    if not _courses_lang_dir(lang).exists():
-        raise HTTPException(status_code=404, detail=f"Language '{lang}' not found")
-
     skill_key = (skill_id or "").strip().lower()
     if skill_key not in SKILL_META:
         return []
